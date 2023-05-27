@@ -13,7 +13,7 @@ def base_user() -> UserCreate:
     return UserCreate(
         username="test_username",
         email=EmailAddr("test@example.com"),
-        password="test_password",  # noqa: S106,
+        password="test_password",  # ,
     )
 
 

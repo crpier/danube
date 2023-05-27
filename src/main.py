@@ -10,6 +10,8 @@ from src.user_service import create_user, get_users
 app = FastAPI()
 api_router = APIRouter()
 
+# call session on startup to trigger any errors in lazy stuff
+session()
 db_session = Annotated[Session, Depends(session)]
 
 
