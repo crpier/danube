@@ -45,6 +45,7 @@ def docker_service(fake_docker_client: FakeDockerClient) -> DockerService:
     return DockerService(fake_docker_client, {})  # type: ignore # noqa: PGH003
 
 
+@pytest.mark.unit()
 def test_container_run_call_is_correct(
     docker_service: DockerService,
     fake_docker_client: FakeDockerClient,
@@ -62,6 +63,7 @@ def test_container_run_call_is_correct(
     assert expected_call == fake_docker_client.containers.run_log
 
 
+@pytest.mark.unit()
 def test_container_id_saved_is_returned(
     docker_service: DockerService,
 ) -> None:

@@ -25,11 +25,6 @@ black = "^23.3.0"
 pre-commit = "^3.3.2"
 
 [tool.pytest.ini_options]
-markers = [
-"component: target only one individual component",
-"integration: target multiple components",
-"acceptance: target whole workflow when interfacing with the application",
-]
 filterwarnings = [
 "ignore:'crypt' is deprecated and slated for removal in Python 3.13:DeprecationWarning"
 ]
