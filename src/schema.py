@@ -1,6 +1,7 @@
+from pathlib import Path
 from typing import NewType
 
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl, validator
 
 EmailAddr = NewType("EmailAddr", str)
 UserId = NewType("UserId", int)
@@ -12,14 +13,38 @@ class UserCreate(BaseModel):
     email: EmailAddr
     password: str
 
-    class Config:
-        orm_mode = True
-
 
 class UserView(BaseModel):
     id: UserId
     username: str
     email: EmailAddr
 
+    class Config:
+        orm_mode = True
+
+
+class PipelineCreate(BaseModel):
+    source_repo: HttpUrl
+    pipeline_path: Path | None = Path("danube.py")
+
+    @validator("source_repo")
+    def source_is_github(cls, v: HttpUrl) -> HttpUrl:  # noqa: N805
+        # TODO: handle url with http://
+        # TODO: handle ssh syntax url
+        assert v.host == "github.com"
+        return v
+
+    @validator("pipeline_path")
+    def script_path_is_relative_and_python(cls, v: Path) -> Path:  # noqa: N805
+        if v.is_absolute():
+            msg = "Path to script cannot be absolute"
+            raise ValueError(msg)
+        if v.suffix != ".py":
+            msg = "Script must be a `.py` file"
+            raise ValueError(msg)
+        return v
+
+
+class PipelineView(PipelineCreate):
     class Config:
         orm_mode = True

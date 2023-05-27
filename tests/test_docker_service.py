@@ -1,8 +1,11 @@
 import random
 from typing import Any
 
+import docker
 import pytest
+from docker.types import LogConfig
 
+from src.depends import Config, Environment
 from src.docker_service import DockerService
 
 
@@ -69,3 +72,18 @@ def test_container_id_saved_is_returned(
 ) -> None:
     container_id = docker_service.start_container("test_image", {})
     assert container_id == docker_service._container_ids[0]
+
+
+def lol() -> None:
+    Config(SECRET_KEY="aaa", ENV=Environment.DEV)
+    service = DockerService(
+        docker.from_env(),
+        default_log_config=LogConfig(
+            type=LogConfig.types.JSON,
+            config={"max-size": "1g", "labels": "jobs"},
+        ),
+    )
+    service.start_container(
+        image="memecry",
+        env={"PORT": 8000, "SECRET_KEY": "aaa", "SUPER_ADMIN_PASSWORD": "kek"},
+    )

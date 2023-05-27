@@ -38,3 +38,11 @@ class Job(Base):
     started_by: Mapped[int]
     started_at: Mapped[datetime]
     stopped_at: Mapped[datetime | None]
+
+
+class Pipeline(Base):
+    __tablename__ = "pipelines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_repo: Mapped[str]
+    pipeline_path: Mapped[str] = mapped_column(default="danube.py")
