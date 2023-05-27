@@ -8,12 +8,6 @@ if ! black . --check; then
 fi
 echo -e "---------\n"
 
-echo "isort:"
-if ! isort . --check-only --profile black; then
-  status=1
-fi
-echo -e "---------\n"
-
 echo "ruff:"
 if ! ruff .; then
   status=1

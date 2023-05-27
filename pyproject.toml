@@ -1,0 +1,46 @@
+[tool.poetry]
+name = "danube"
+version = "0.1.0"
+description = ""
+authors = ["crpier <crpier42@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.95.2"
+uvicorn = "^0.22.0"
+sqlalchemy = "^2.0.15"
+pydantic = "^1.10.8"
+pytest = "^7.3.1"
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+types-passlib = "^1.7.7.12"
+types-python-jose = "^3.3.4.7"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.0.270"
+mypy = "^1.3.0"
+black = "^23.3.0"
+pre-commit = "^3.3.2"
+
+[tool.pytest.ini_options]
+markers = [
+"component: target only one individual component",
+"integration: target multiple components",
+"acceptance: target whole workflow when interfacing with the application",
+]
+filterwarnings = [
+"ignore:'crypt' is deprecated and slated for removal in Python 3.13:DeprecationWarning"
+]
+
+[tool.ruff]
+extend-select = ["F", "E", "W", "C90", "I", "N", "UP", "YTT", "ANN", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "ISC", "ICN", "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "RUF"]
+ignore = [
+"S101", # Prefer asserts to raising errors. Note that means we should not build with `-O` flag
+"A003", # Usually a class attribute `id` shadows the `id` function. I can live with that
+]
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
