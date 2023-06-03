@@ -3,10 +3,10 @@ from typing import Annotated, TypedDict
 
 from fastapi import APIRouter, Depends, FastAPI
 
-from src.depends import Session, session
-from src.pipeline_service import create_pipeline, get_pipelines
-from src.schema import PipelineCreate, PipelineView, UserCreate, UserId, UserView
-from src.user_service import create_user, get_users
+from danube.depends import Session, session
+from danube.pipeline_service import create_pipeline, get_pipelines
+from danube.schema import PipelineCreate, PipelineView, UserCreate, UserId, UserView
+from danube.user_service import create_user, get_users
 
 app = FastAPI()
 api_router = APIRouter()

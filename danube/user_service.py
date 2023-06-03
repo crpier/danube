@@ -1,9 +1,9 @@
 from sqlalchemy import select
 
-from src.depends import Session
-from src.model import User
-from src.schema import UserCreate, UserId, UserView
-from src.security import get_password_hash, verify_password
+from danube.depends import Session
+from danube.model import User
+from danube.schema import UserCreate, UserId, UserView
+from danube.security import get_password_hash, verify_password
 
 
 class AuthenticationError(Exception):

@@ -2,10 +2,10 @@ import pytest
 from sqlalchemy import delete
 from sqlalchemy.orm import sessionmaker
 
-from src.depends import Session
-from src.model import Base, User, get_engine
-from src.schema import EmailAddr, UserCreate
-from src.user_service import AuthenticationError, authenticate_user, create_user
+from danube.depends import Session
+from danube.model import Base, User, get_engine
+from danube.schema import EmailAddr, UserCreate
+from danube.user_service import AuthenticationError, authenticate_user, create_user
 
 
 @pytest.fixture()

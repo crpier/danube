@@ -5,8 +5,8 @@ import docker
 import pytest
 from docker.types import LogConfig
 
-from src.depends import Config, Environment
-from src.docker_service import DockerService
+from danube.depends import Config, Environment
+from danube.docker_service import DockerService
 
 
 class FakeContainer:

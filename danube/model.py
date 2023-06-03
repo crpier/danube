@@ -45,4 +45,4 @@ class Pipeline(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     source_repo: Mapped[str]
-    pipeline_path: Mapped[str] = mapped_column(default="danube.py")
+    script_path: Mapped[str] = mapped_column(default="danube.py")

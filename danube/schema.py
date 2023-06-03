@@ -25,17 +25,19 @@ class UserView(BaseModel):
 
 class PipelineCreate(BaseModel):
     source_repo: HttpUrl
-    pipeline_path: Path | None = Path("danube.py")
+    script_path: Path | None = Path("danube.py")
 
     @validator("source_repo")
     def source_is_github(cls, v: HttpUrl) -> HttpUrl:  # noqa: N805
         # TODO: handle url with http://
         # TODO: handle ssh syntax url
-        assert v.host == "github.com"
+        assert v.host == "github.com", "Source repo must be hosted on GitHub"
         return v
 
-    @validator("pipeline_path")
+    @validator("script_path")
     def script_path_is_relative_and_python(cls, v: Path) -> Path:  # noqa: N805
+        if v is None:
+            return v
         if v.is_absolute():
             msg = "Path to script cannot be absolute"
             raise ValueError(msg)

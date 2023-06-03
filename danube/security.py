@@ -4,7 +4,7 @@ import jose
 import jose.jwt
 from passlib.hash import pbkdf2_sha256
 
-from src.depends import Config
+from danube.depends import Config
 
 
 def create_access_token(data: dict, config: Config) -> str:

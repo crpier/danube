@@ -8,7 +8,7 @@ import sqlalchemy.orm
 from pydantic import BaseSettings
 from sqlalchemy.orm import sessionmaker
 
-from src.model import Base, get_engine
+from danube.model import Base, get_engine
 
 Session = Callable[[], sqlalchemy.orm.Session]
 

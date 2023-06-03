@@ -17,12 +17,16 @@ passlib = {extras = ["bcrypt"], version = "^1.7.4"}
 types-passlib = "^1.7.7.12"
 types-python-jose = "^3.3.4.7"
 docker = "^6.1.2"
+click = "^8.1.3"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.0.270"
 mypy = "^1.3.0"
 black = "^23.3.0"
 pre-commit = "^3.3.2"
+
+[tool.poetry.scripts]
+danube-cli = "danube.entrypoints.cli:cli"
 
 [tool.pytest.ini_options]
 filterwarnings = [
@@ -36,6 +40,7 @@ ignore = [
 "A003", # Usually a class attribute `id` shadows the `id` function. I can live with that
 "A002", # Usually a function argument named `id`. Also fine
 "ANN101", # I see no need for type annotaion on `self`
+"UP007", # Typer doesn't support `| None` unions in Python3.11 yet
 ]
 
 [tool.ruff.per-file-ignores]
@@ -44,6 +49,13 @@ ignore = [
 "S106", # tests don't mind hardcoded passwords
 "SLF001", # whitebox tests would like to access private vars, especially in fakes
 ]
+"danube/lib/pydantic_click.py" = [
+"ANN401", # Use `Any`s a lot in glue code 🤷
+"N806", # I can't rename functions I copied from click lib for now...have to look into re-decorating "argument" and "option"
+"SLF001", # I am using private members of "click" for the same reason as above
+"PGH003", # Let me silence large swathes of errros for now
+]
+
 
 [[tool.mypy.overrides]]
 module = ["docker", "docker.types", "docker.models.containers"]
