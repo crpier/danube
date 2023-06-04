@@ -20,6 +20,7 @@ class Environment(StrEnum):
     TEST = auto()
 
 
+# TODO: some of these only make sense for the CLI
 class Config(BaseSettings):
     SECRET_KEY: str
     HASH_ALGORITHM: str = "HS256"
@@ -27,15 +28,18 @@ class Config(BaseSettings):
     DB_URI: str = "sqlite+pysqlite:///dev.db"
     ENV: Environment = Environment.PROD
 
+    class Config:
+        env_file = ".env"
+
 
 @lru_cache
 def bootstrap() -> Config:
     config = Config.parse_obj({})
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(logging.INFO)
 
     handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.DEBUG)
+    handler.setLevel(logging.INFO)
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )

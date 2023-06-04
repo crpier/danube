@@ -24,6 +24,7 @@ class UserView(BaseModel):
 
 
 class PipelineCreate(BaseModel):
+    name: str
     source_repo: HttpUrl
     script_path: Path | None = Path("danube.py")
 
@@ -48,5 +49,7 @@ class PipelineCreate(BaseModel):
 
 
 class PipelineView(PipelineCreate):
+    id: int
+
     class Config:
         orm_mode = True

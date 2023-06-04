@@ -44,5 +44,6 @@ class Pipeline(Base):
     __tablename__ = "pipelines"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(unique=True)
     source_repo: Mapped[str]
     script_path: Mapped[str] = mapped_column(default="danube.py")

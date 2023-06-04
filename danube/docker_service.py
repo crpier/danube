@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import docker
+from docker.models.images import Image
 from docker.types import LogConfig
 
 if TYPE_CHECKING:
@@ -42,3 +43,6 @@ class DockerService:
             id,
         )
         result.stop()
+
+    def list_images(self) -> list[Image]:
+        return self._client.images.list()  # type: ignore
