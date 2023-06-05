@@ -1,23 +1,22 @@
 from pathlib import Path
 from typing import NewType
 
-from pydantic import BaseModel, HttpUrl, validator
+from pydantic import BaseModel, EmailStr, HttpUrl, validator
 
-EmailAddr = NewType("EmailAddr", str)
 UserId = NewType("UserId", int)
 JobId = NewType("JobId", int)
 
 
 class UserCreate(BaseModel):
     username: str
-    email: EmailAddr
+    email: EmailStr
     password: str
 
 
 class UserView(BaseModel):
     id: UserId
     username: str
-    email: EmailAddr
+    email: EmailStr
 
     class Config:
         orm_mode = True

@@ -1,13 +1,17 @@
 from datetime import datetime
 from enum import StrEnum, auto
+from typing import Any
 
 import sqlalchemy.engine
 from sqlalchemy import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
-def get_engine(uri: str = "sqlite+pysqlite:///dev.db") -> Engine:
-    return sqlalchemy.engine.create_engine(uri)
+def get_engine(
+    uri: str = "sqlite+pysqlite:///dev.db",
+    **kwargs: Any,
+) -> Engine:
+    return sqlalchemy.engine.create_engine(uri, **kwargs)
 
 
 class JobStatus(StrEnum):

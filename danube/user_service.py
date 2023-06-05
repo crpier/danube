@@ -1,6 +1,7 @@
 from sqlalchemy import select
 
 from danube.depends import Session
+from danube.injector import injectable
 from danube.model import User
 from danube.schema import UserCreate, UserId, UserView
 from danube.security import get_password_hash, verify_password
@@ -10,13 +11,15 @@ class AuthenticationError(Exception):
     ...
 
 
-def get_users(session: Session) -> list[UserView]:
+@injectable
+def get_users(*, session: Session) -> list[UserView]:
     with session() as s:
         res = s.execute(select(User)).all()
         return [UserView.from_orm(user[0]) for user in res]
 
 
-def create_user(session: Session, user_create: UserCreate) -> UserId:
+@injectable
+def create_user(user_create: UserCreate, *, session: Session) -> UserId:
     with session() as s:
         # TODO: can we make this implicit and type safe?
         new_user = User(
@@ -29,7 +32,8 @@ def create_user(session: Session, user_create: UserCreate) -> UserId:
         return UserId(new_user.id)
 
 
-def authenticate_user(session: Session, username: str, password: str) -> UserView:
+@injectable
+def authenticate_user(username: str, password: str, *, session: Session) -> UserView:
     """Authenticate with username and password
 
     Returns:

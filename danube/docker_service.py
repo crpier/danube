@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -46,3 +47,8 @@ class DockerService:
 
     def list_images(self) -> list[Image]:
         return self._client.images.list()  # type: ignore
+
+    async def build_image(self, *args, **kwargs) -> None:
+        print("Fake building image")
+        await asyncio.sleep(5)
+        print("Fake image built")

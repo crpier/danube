@@ -10,7 +10,7 @@ python = "^3.11"
 fastapi = "^0.95.2"
 uvicorn = "^0.22.0"
 sqlalchemy = "^2.0.15"
-pydantic = {extras = ["dotenv"], version = "^1.10.8"}
+pydantic = {extras = ["dotenv", "email"], version = "^1.10.8"}
 pytest = "^7.3.1"
 python-jose = {extras = ["cryptography"], version = "^3.3.0"}
 passlib = {extras = ["bcrypt"], version = "^1.7.4"}
@@ -24,6 +24,7 @@ ruff = "^0.0.270"
 mypy = "^1.3.0"
 black = "^23.3.0"
 pre-commit = "^3.3.2"
+httpx = "^0.24.1"
 
 [tool.poetry.scripts]
 danube-cli = "danube.entrypoints.cli:cli"
@@ -48,6 +49,8 @@ ignore = [
 "S311", # tests don't need cryptographically secure `random` lol
 "S106", # tests don't mind hardcoded passwords
 "SLF001", # whitebox tests would like to access private vars, especially in fakes
+"PGH003", # Let me use type: ignore when making mocks
+"F401", # It's fine to import fixtures and not use them if they are autouse
 ]
 "danube/lib/pydantic_click.py" = [
 "ANN401", # Use `Any`s a lot in glue code 🤷

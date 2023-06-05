@@ -45,7 +45,7 @@ def fake_docker_client() -> FakeDockerClient:
 
 @pytest.fixture()
 def docker_service(fake_docker_client: FakeDockerClient) -> DockerService:
-    return DockerService(fake_docker_client, {})  # type: ignore # noqa: PGH003
+    return DockerService(fake_docker_client, {})  # type: ignore
 
 
 @pytest.mark.unit()
@@ -72,9 +72,3 @@ def test_container_id_saved_is_returned(
 ) -> None:
     container_id = docker_service.start_container("test_image", {})
     assert container_id == docker_service._container_ids[0]
-
-
-service.start_container(
-    image="memecry",
-    env={"PORT": 8000, "SECRET_KEY": "aaa", "SUPER_ADMIN_PASSWORD": "kek"},
-)

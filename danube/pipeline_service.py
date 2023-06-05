@@ -1,7 +1,8 @@
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
-from danube.depends import Session
+from danube.depends import DockerService, Session, TasksService
+from danube.injector import injectable
 from danube.model import Pipeline
 from danube.schema import PipelineCreate, PipelineView
 
@@ -10,13 +11,15 @@ class DuplicateError(Exception):
     ...
 
 
-def get_pipelines(session: Session) -> list[PipelineView]:
+@injectable
+def get_pipelines(*, session: Session) -> list[PipelineView]:
     with session() as s:
         res = s.execute(select(Pipeline)).all()
         return [PipelineView.from_orm(pipeline[0]) for pipeline in res]
 
 
-def get_pipeline(session: Session, pipeline_id: int) -> PipelineView | None:
+@injectable
+def get_pipeline(pipeline_id: int, *, session: Session) -> PipelineView | None:
     with session() as s:
         res = s.execute(
             select(Pipeline).where(Pipeline.id == pipeline_id),
@@ -26,7 +29,14 @@ def get_pipeline(session: Session, pipeline_id: int) -> PipelineView | None:
         return None
 
 
-def create_pipeline(session: Session, pipeline_create: PipelineCreate) -> int:
+@injectable
+def create_pipeline(
+    pipeline_create: PipelineCreate,
+    *,
+    session: Session,
+    tasks_service: TasksService,
+    docker_service: DockerService,
+) -> int:
     with session() as s:
         # TODO: can we make this implicit and type safe?
         new_pipeline = Pipeline(
@@ -36,20 +46,27 @@ def create_pipeline(session: Session, pipeline_create: PipelineCreate) -> int:
         )
         s.add(new_pipeline)
         try:
+            tasks_service.do_task(docker_service.build_image)
+        except RuntimeError:
+            s.rollback()
+            raise
+        try:
             s.commit()
-            return new_pipeline.id
         except IntegrityError as e:
             s.rollback()
             raise DuplicateError from e
+        return new_pipeline.id
 
 
-def delete_pipeline(session: Session, pipeline_id: int) -> None:
+@injectable
+def delete_pipeline(pipeline_id: int, *, session: Session) -> None:
     with session() as s:
         s.execute(delete(Pipeline).where(Pipeline.id == pipeline_id))
         s.commit()
 
 
-def delete_all_pipelines(session: Session) -> None:
+@injectable
+def delete_all_pipelines(*, session: Session) -> None:
     with session() as s:
         s.delete(select(Pipeline))
         s.commit()
