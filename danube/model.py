@@ -1,9 +1,10 @@
 from datetime import datetime
 from enum import StrEnum, auto
+from pathlib import Path
 from typing import Any
 
 import sqlalchemy.engine
-from sqlalchemy import Engine
+from sqlalchemy import Engine, ForeignKey
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -51,3 +52,11 @@ class Pipeline(Base):
     name: Mapped[str] = mapped_column(unique=True)
     source_repo: Mapped[str]
     script_path: Mapped[str] = mapped_column(default="danube.py")
+
+
+class PipelineConfig(Base):
+    __tablename__ = "pipeline_configs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pipeline_id: Mapped[int] = mapped_column(ForeignKey("pipelines.id"))
+    # docker_images: Mapped[list[str | Path]]

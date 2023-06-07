@@ -1,9 +1,14 @@
+import ast
+from pathlib import Path
+
+from pydantic import HttpUrl
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
+from danube import schema
 
-from danube.depends import DockerService, Session, TasksService
+from danube.depends import DockerService, GithubAdapter, Session, TasksService
 from danube.injector import injectable
-from danube.model import Pipeline
+from danube.model import Pipeline, PipelineConfig
 from danube.schema import PipelineCreate, PipelineView
 
 
@@ -27,6 +32,22 @@ def get_pipeline(pipeline_id: int, *, session: Session) -> PipelineView | None:
         if res:
             return PipelineView.from_orm(res[0])
         return None
+
+
+@injectable
+def add_pipeline_config(
+    pipeline_id: int,
+    pipeline_url: HttpUrl,
+    *,
+    session: Session,
+    github_adapter: GithubAdapter,
+) -> None:
+    config_file = github_adapter.get_repo_file(pipeline_url, "danube.py")
+    pipeline_config = parse_pipeline_config_file(config_file)
+    with session() as s:
+        p = PipelineConfig(**pipeline_config.dict())
+        s.add(p)
+        s.commit()
 
 
 @injectable
@@ -70,3 +91,15 @@ def delete_all_pipelines(*, session: Session) -> None:
     with session() as s:
         s.delete(select(Pipeline))
         s.commit()
+
+
+def parse_pipeline_config_file(config_file: str) -> schema.PipelineConfig:
+    tree = ast.parse(config_file)
+    for item in ast.walk(tree):
+        print(item)
+        if item_id := getattr(item, "id", None):
+            print(item_id)
+
+
+with Path("example.danube.py").open() as f:
+    print(parse_pipeline_config_file(f.read()))

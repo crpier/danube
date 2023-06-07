@@ -10,11 +10,12 @@ from docker.types import LogConfig
 from pydantic import BaseSettings
 from sqlalchemy.orm import sessionmaker
 
-from danube import docker_service, injector, tasks_service
+from danube import docker_service, github_adapter, injector, tasks_service
 from danube.model import Base, get_engine
 
 Session = Annotated[Callable[[], sqlalchemy.orm.Session], injector.Injected]
 DockerService = Annotated[docker_service.DockerService, injector.Injected]
+GithubAdapter = Annotated[github_adapter.GithubAdapter, injector.Injected]
 TasksService = Annotated[tasks_service.TasksService, injector.Injected]
 
 
@@ -38,6 +39,9 @@ def bootstrap() -> None:
     )
 
     injector.add_injectable("tasks_service", tasks_service.TasksService())
+    injector.add_injectable(
+        "github_adapter", github_adapter.GithubAdapter(config.GITHUB_TOKEN),
+    )
 
     root_logger = logging.getLogger(config.APP_NAME)
     root_logger.setLevel(logging.INFO)
@@ -66,6 +70,7 @@ class Config(BaseSettings):
     HASH_ALGORITHM: str = "HS256"
     SECRET_KEY: str
     TOKEN_EXPIRE_MINUTES: int = 120
+    GITHUB_TOKEN: str
 
     class Config:
         env_file = ".env"

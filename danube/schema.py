@@ -1,5 +1,7 @@
+import datetime
+from collections.abc import Callable
 from pathlib import Path
-from typing import NewType
+from typing import NewType, TypedDict
 
 from pydantic import BaseModel, EmailStr, HttpUrl, validator
 
