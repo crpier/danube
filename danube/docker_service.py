@@ -1,13 +1,12 @@
-import asyncio
 import logging
-from typing import TYPE_CHECKING
+from io import BufferedReader
+from typing import TYPE_CHECKING, TypedDict
 
 import docker
 from docker.models.images import Image
 from docker.types import LogConfig
 
-if TYPE_CHECKING:
-    from docker.models.containers import Container
+from docker.models.containers import Container
 
 
 class DockerService:
@@ -48,7 +47,24 @@ class DockerService:
     def list_images(self) -> list[Image]:
         return self._client.images.list()  # type: ignore
 
-    async def build_image(self, *args, **kwargs) -> None:
-        print("Fake building image")
-        await asyncio.sleep(5)
-        print("Fake image built")
+    def build_image(
+        # TODO: tag should be an object, or at least a new type
+        self,
+        dockerfile: BufferedReader,
+        tag: str,
+    ) -> list["BuildOutput"]:
+        res: list[BuildOutput] = self._client.api.build(
+            fileobj=dockerfile,
+            tag=tag,
+            decode=True,
+            rm=True,
+        )
+        return res
+
+    def create_container(self, image: str) -> Container:
+        return self._client.containers.create(image=image)
+
+
+class BuildOutput(TypedDict, total=False):
+    stream: str
+    aux: dict[str, str]

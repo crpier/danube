@@ -62,6 +62,8 @@ ignore = [
 "danube/pipeline_config.py" = [
 "N803", # I want some args to be named all uppercase
 ]
+"danube/example.py" = [
+"ANN201", # Danube's config functions always return None anyway
 ]
 
 [[tool.mypy.overrides]]

@@ -1,40 +1,52 @@
 import datetime
 from pathlib import Path
 
-from danube.pipeline_config import Ops, Pipeline
+from danube.pipeline_config import Approvers, Ops, Pipeline
 
-DOCKER_IMAGES = {"ubuntu": "ubuntu:latest", "danube-dev": Path("./Dockerfile")}
+DOCKER_IMAGES: dict[str, str | Path] = {
+    "danube-dev": Path("build/dev.Dockerfile"),
+    "danube-prod": "danube-prod:latest",
+}
 
-pipeline = Pipeline(DOCKER_IMAGES=DOCKER_IMAGES, CONFIG={"max_time": datetime.timedelta(hours=1)})
+pipeline = Pipeline(
+    DOCKER_IMAGES=DOCKER_IMAGES,
+    CONFIG={"max_time": datetime.timedelta(hours=1)},
+)
 ops = Ops(pipeline)
 
-@pipeline.stage(on=DOCKER_IMAGES["ubuntu"])
-def init_workspace(pipeline: Pipeline, ops: Ops):
-    stdout, stderr = ops.shell("echo Hello World!")
-    print(stdout, stderr)
 
-    @init_workspace.stage
-    def part_1_init(pipeline: Pipeline, ops: Ops):
-        stdout, stderr = ops.shell("echo I am in stage 1!")
-        print(stdout, stderr)
-        if stderr != "":
-            pipeline.set_stage_status("Failed")
-
-    @init_workspace.stage(on=DOCKER_IMAGES["danube-dev"])
-    def part_2_init(pipeline: Pipeline, ops: Ops):
-        stdout, stderr = ops.shell("echo I am in stage 2!")
-        print(stdout, stderr)
-        if stdout != "":
-            msg = "Do you want to deploy I guess?"
-            if pipeline.prompt_confirmation(msg):
-                return
-        pipeline.stop()
+@pipeline.stage(on=DOCKER_IMAGES["danube-dev"], clone=True)
+def lint(pipeline: Pipeline, ops: Ops):
+    _, _, retcode = ops.make("lint", failhard=False)
+    if retcode != 0:
+        ops.make("fix_linting")
+        ops.git_commit(f"Fix linting in build {pipeline.BUILD_NUMBER}")
 
 
-@init_workspace.stage()
-def part_3_init(pipeline: Pipeline, ops: Ops):
-    stdout, stderr = ops.shell("echo I am in stage 2!")
-    print(stdout, stderr)
+@pipeline.stage(on=DOCKER_IMAGES["danube-dev"], clone=True)
+def unit_test(ops: Ops):
+    pipeline.report_tests("Unit Tests", ops.make("test_unit"))
 
-# or, alternatively:
-# pipeline.register_stages({init_workspace: [part_1_init, part_2_init, part_3_init]})
+
+@pipeline.stage()
+def build(ops: Ops):
+    ops.docker_build(Path("Dockerfile"), tag="latest")
+
+
+@pipeline.stage()
+def deploy_staging():
+    ops.dokku_git_sync(pipeline.TARGET_DEPLOYMENTS["staging"])
+
+
+@pipeline.stage()
+def acceptance_test(ops: Ops):
+    pipeline.report_tests("Acceptance Tests", ops.make("test_acceptance"))
+
+
+@pipeline.stage()
+def deploy_production():
+    if pipeline.prompt_confirmation(
+        "Are you sure you want to deploy to production?",
+        approvers=Approvers.REPO_ADMINS,
+    ):
+        ops.dokku_git_sync(pipeline.TARGET_DEPLOYMENTS["production"])

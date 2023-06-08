@@ -40,7 +40,8 @@ def bootstrap() -> None:
 
     injector.add_injectable("tasks_service", tasks_service.TasksService())
     injector.add_injectable(
-        "github_adapter", github_adapter.GithubAdapter(config.GITHUB_TOKEN),
+        "github_adapter",
+        github_adapter.GithubAdapter(config.GITHUB_TOKEN),
     )
 
     root_logger = logging.getLogger(config.APP_NAME)
@@ -54,6 +55,14 @@ def bootstrap() -> None:
     handler.setFormatter(formatter)
     root_logger.addHandler(handler)
     injector.add_injectable("logger", root_logger)
+
+    display_logger = logging.getLogger("display")
+    display_logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(message)s")
+    handler.setFormatter(formatter)
+    display_logger.addHandler(handler)
 
 
 class Environment(StrEnum):
