@@ -53,7 +53,7 @@ def test_container_run_call_is_correct(
     docker_service: DockerService,
     fake_docker_client: FakeDockerClient,
 ) -> None:
-    docker_service.start_container("test_image", {})
+    docker_service.run_container("test_image", {})
     expected_call = [
         {
             "image": "test_image",
@@ -70,5 +70,5 @@ def test_container_run_call_is_correct(
 def test_container_id_saved_is_returned(
     docker_service: DockerService,
 ) -> None:
-    container_id = docker_service.start_container("test_image", {})
-    assert container_id == docker_service._container_ids[0]
+    container_id = docker_service.run_container("test_image", {})
+    assert container_id == docker_service._containers[0]

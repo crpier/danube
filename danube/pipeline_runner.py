@@ -16,28 +16,42 @@ def ensure_controller_image(
     docker_service: DockerService,
 ) -> None:
     with Path("danube/controller.Dockerfile").open("rb") as f:
-        logs = docker_service.build_image(dockerfile=f, tag="danube-controller:latest")
+        logs = docker_service.build_image(dockerfile=f, tag="latest")
     auxiliary: list[dict[str, str]] = []
     for log in logs:
         if msg := log.get("stream"):
             logger.info(msg.strip())
         elif aux := log.get("aux"):
             auxiliary.append(aux)
-    logger.debug(auxiliary)
+    logger.info(auxiliary)
 
 
 @injectable
 def run_danube_file(danubefile: Path, *, docker_service: DockerService) -> None:
-    tar_data = tarfile.open("archive.tar", "w")
-    tar_data.add(danubefile, "danube.py")
+    # Load the danubefile
+    tar_data = tarfile.open("danubefile.tar", "w")
+    tar_data.add(danubefile, "danubefile.py")
     tar_data.close()
-    container = docker_service.create_container(image="danube-controller:latest")
-    print(container)
 
-    with Path("archive.tar").open("rb") as f:
+    # Load the danube library
+    tar_lib = tarfile.open("danube_lib.tar", "w")
+    tar_lib.add(Path("danube"), "danube")
+    tar_lib.close()
+
+    container = docker_service.create_container(image="danube-controller:latest")
+    logger.info(container)
+
+    with Path("danubefile.tar").open("rb") as f:
         container.put_archive("/home", f.read())
+
+    with Path("danube_lib.tar").open("rb") as f:
+        container.put_archive("/home/danube", f.read())
+
+    Path("danubefile.tar").unlink()
+    res = container.start()
+    logger.info(res)
 
 
 ensure_controller_image()
 
-run_danube_file(Path("danube/example.py"))
+# run_danube_file(Path("danube/example.py"))

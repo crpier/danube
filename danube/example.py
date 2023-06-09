@@ -1,4 +1,5 @@
 import datetime
+import time
 from pathlib import Path
 
 from danube.pipeline_config import Approvers, Ops, Pipeline
@@ -50,3 +51,6 @@ def deploy_production():
         approvers=Approvers.REPO_ADMINS,
     ):
         ops.dokku_git_sync(pipeline.TARGET_DEPLOYMENTS["production"])
+
+
+time.sleep(10)

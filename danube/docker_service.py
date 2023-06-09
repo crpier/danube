@@ -1,12 +1,11 @@
 import logging
 from io import BufferedReader
-from typing import TYPE_CHECKING, TypedDict
+from typing import TypedDict
 
 import docker
+from docker.models.containers import Container
 from docker.models.images import Image
 from docker.types import LogConfig
-
-from docker.models.containers import Container
 
 
 class DockerService:
@@ -15,13 +14,13 @@ class DockerService:
         client: docker.DockerClient,
         default_log_config: LogConfig,
     ) -> None:
-        self._container_ids: list[str] = []
+        self._containers: dict[str, Container] = {}
         self._log_config = default_log_config
 
         self._client = client
         self.logger = logging.getLogger()
 
-    def start_container(self, image: str, env: dict[str, str | int]) -> str:
+    def run_container(self, image: str, env: dict[str, str | int]) -> str:
         # TODO: when detach=False, result is not a container; handle that
         container: Container = (  # type: ignore # noqa: PGH003
             self._client.containers.run(
@@ -33,7 +32,7 @@ class DockerService:
             )
         )
         assert container.id
-        self._container_ids.append(str(container.id))
+        self._containers[str(container.id)] = container
         # TODO: add logging
         self.logger.info("Started container %s", container.id)
         return container.id
@@ -45,7 +44,7 @@ class DockerService:
         result.stop()
 
     def list_images(self) -> list[Image]:
-        return self._client.images.list()  # type: ignore
+        return self._client.images.list()
 
     def build_image(
         # TODO: tag should be an object, or at least a new type
@@ -62,7 +61,9 @@ class DockerService:
         return res
 
     def create_container(self, image: str) -> Container:
-        return self._client.containers.create(image=image)
+        new_container: Container = self._client.containers.create(image=image)
+        self._containers[str(new_container.id)] = new_container
+        return new_container
 
 
 class BuildOutput(TypedDict, total=False):
