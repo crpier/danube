@@ -31,10 +31,6 @@ def bootstrap() -> None:
         "docker_service",
         docker_service.DockerService(
             docker.from_env(),
-            default_log_config=LogConfig(
-                type=LogConfig.types.JSON,
-                config={"max-size": "1g", "labels": "jobs"},
-            ),
         ),
     )
 

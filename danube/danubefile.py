@@ -21,10 +21,10 @@ class Pipeline:
     def __init__(
         self,
         DOCKER_IMAGES: dict[str, str | Path],
-        CONFIG: PipelineConfig = {},
+        CONFIG: PipelineConfig | None = None,
     ) -> None:
         self._docker_images = DOCKER_IMAGES
-        self._config = CONFIG
+        self._config = CONFIG if CONFIG else {}
         self.BUILD_NUMBER = 0
         self.TARGET_DEPLOYMENTS: dict[str, str] = {}
 

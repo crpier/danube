@@ -1,8 +1,10 @@
 import datetime
-import time
 from pathlib import Path
 
-from danube.pipeline_config import Approvers, Ops, Pipeline
+import docker
+
+from danube import docker_service
+from danube.danubefile import Approvers, Ops, Pipeline
 
 DOCKER_IMAGES: dict[str, str | Path] = {
     "danube-dev": Path("build/dev.Dockerfile"),
@@ -53,4 +55,7 @@ def deploy_production():
         ops.dokku_git_sync(pipeline.TARGET_DEPLOYMENTS["production"])
 
 
-time.sleep(10)
+service = docker_service.DockerService(
+    docker.from_env(),
+)
+print(service._client.images.list())

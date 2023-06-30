@@ -8,7 +8,7 @@ from danube import schema
 
 from danube.depends import DockerService, GithubAdapter, Session, TasksService
 from danube.injector import injectable
-from danube.model import Pipeline, PipelineConfig
+from danube.model import Pipeline
 from danube.schema import PipelineCreate, PipelineView
 
 
@@ -66,11 +66,11 @@ def create_pipeline(
             name=pipeline_create.name,
         )
         s.add(new_pipeline)
-        try:
-            tasks_service.do_task(docker_service.build_image)
-        except RuntimeError:
-            s.rollback()
-            raise
+        # try:
+        #     tasks_service.do_task(docker_service.build_image)
+        # except RuntimeError:
+        #     s.rollback()
+        #     raise
         try:
             s.commit()
         except IntegrityError as e:
@@ -91,15 +91,3 @@ def delete_all_pipelines(*, session: Session) -> None:
     with session() as s:
         s.delete(select(Pipeline))
         s.commit()
-
-
-def parse_pipeline_config_file(config_file: str) -> schema.PipelineConfig:
-    tree = ast.parse(config_file)
-    for item in ast.walk(tree):
-        print(item)
-        if item_id := getattr(item, "id", None):
-            print(item_id)
-
-
-with Path("example.danube.py").open() as f:
-    print(parse_pipeline_config_file(f.read()))

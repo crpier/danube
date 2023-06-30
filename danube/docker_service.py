@@ -1,21 +1,17 @@
 import logging
-from io import BufferedReader
 from typing import TypedDict
 
 import docker
 from docker.models.containers import Container
 from docker.models.images import Image
-from docker.types import LogConfig
 
 
 class DockerService:
     def __init__(
         self,
         client: docker.DockerClient,
-        default_log_config: LogConfig,
     ) -> None:
         self._containers: dict[str, Container] = {}
-        self._log_config = default_log_config
 
         self._client = client
         self.logger = logging.getLogger()
@@ -49,11 +45,13 @@ class DockerService:
     def build_image(
         # TODO: tag should be an object, or at least a new type
         self,
-        dockerfile: BufferedReader,
+        dockerfile_path: str,
         tag: str,
+        context: str = ".",
     ) -> list["BuildOutput"]:
         res: list[BuildOutput] = self._client.api.build(
-            fileobj=dockerfile,
+            path=context,
+            dockerfile=dockerfile_path,
             tag=tag,
             decode=True,
             rm=True,
@@ -61,7 +59,14 @@ class DockerService:
         return res
 
     def create_container(self, image: str) -> Container:
-        new_container: Container = self._client.containers.create(image=image)
+        new_container: Container = self._client.containers.create(
+            image=image,
+            detach=True,
+            ports={"8000": "8000"},
+            volumes={
+                "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+            },
+        )
         self._containers[str(new_container.id)] = new_container
         return new_container
 
