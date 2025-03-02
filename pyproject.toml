@@ -1,0 +1,20 @@
+[project]
+name = "danube"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "docker>=7.1.0",
+    "fastapi>=0.115.11",
+    "httpx>=0.28.1",
+    "openapi-client",
+    "pydantic>=2.10.6",
+    "pytest>=8.3.4",
+    "uvicorn>=0.34.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pyright>=1.1.392.post0",
+]
