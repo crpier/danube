@@ -1,25 +1,26 @@
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Annotated
 
-from pydantic import BaseModel, FilePath
+from pydantic import FilePath
 
 from lib import (
-    BoolParameter,
+    BoolBuildParameter,
     BuildParamsModel,
+    EnvironmentModel,
     ExitStage,
     Image,
     Pipeline,
     Stage,
     TriggersModel,
-    artifact,
 )
 
 
-class Environment(BaseModel):
+class Environment(EnvironmentModel):
     PYTHONPATH: FilePath
 
 
-class Trigger(TriggersModel):
+class Triggers(TriggersModel):
     branches: list[str] = ["^main$", "^dev$", "^feat:.*$"]
     events: list[str] = ["push", "pull_request"]
 
@@ -27,20 +28,23 @@ class Trigger(TriggersModel):
 class BuildParams(BuildParamsModel):
     DEPLOY: Annotated[
         bool,
-        BoolParameter(description="Whether deployment requires approval"),
+        BoolBuildParameter(description="Whether deployment requires approval"),
     ] = True
 
 
-BaseImage = Image(file=FilePath("./Dockerfile"))
+class MyPipeline(Pipeline):
+    Environment = Environment
+    Triggers = Triggers
+    BuildParams = BuildParams
+
+
+BaseImage = Image(file=Path("./Dockerfile"))
 """Basic image for most tasks"""
 BuildImage = Image(name="python:3.11-slim")
 """Image for build and deploy actions"""
 
-with Pipeline(
+with MyPipeline(
     image=BaseImage,
-    env_class=Environment,
-    trigger_class=Trigger,
-    build_params=BuildParams,
 ) as pipeline:
     with Stage("Sanity checks") as s, ThreadPoolExecutor(max_workers=2) as pool:
         pool.submit(lambda: s.run("ruff check ."))
@@ -51,18 +55,16 @@ with Pipeline(
         if res.returncode != 0:
             raise ExitStage("Tests failed")
         s.run("coverage html")
-        pipeline.artifacts.append(
-            artifact(name="coverage-report", path="htmlcov/index.html")
-        )
+        pipeline.save_artifact(name="coverage-report", path="htmlcov/index.html")
 
     if pipeline.branch != "main":
         exit()
 
     with Stage("Build", image=BuildImage):
         s.run("uv build")
-        pipeline.artifacts.append(artifact(name="dist-package", path="dist/*.whl"))
+        pipeline.save_artifact(name="dist-package", path="dist/*.whl")
 
-    if not pipeline.params.DEPLOY:
+    if not pipeline.BuildParams.DEPLOY:
         exit()
 
     with Stage("Deploy", image=BuildImage) as s:
@@ -74,7 +76,7 @@ with Pipeline(
         )
         if not accepted:
             raise ExitStage("Deployment cancelled")
-        api_key_value = pipeline.get_secret("api_key")
+        api_key_value = pipeline.get_secret("API_KEY")
         # Showing part of the api key for demo purposes only
         s.run(f"echo 'Deploying with API key: {api_key_value[:4]}...'")
 
