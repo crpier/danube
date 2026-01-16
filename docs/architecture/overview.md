@@ -7,10 +7,10 @@ Danube is a self-hosted CI/CD platform designed for teams requiring full infrast
 ## Key Differentiators
 
 - **Python-Native Pipelines**: Define pipelines in pure Python (`danubefile.py`) with IDE support
-- **Configuration as Code**: GitOps workflow with declarative YAML
+- **Blueprint (GitOps)**: GitOps workflow with declarative JSON
 - **SLSA Level 3 Compliance**: Hermetic builds, ephemeral environments, provenance generation
 - **Embedded Services**: Bundled K3s, SQLite, Dex OIDC, container registry
-- **Minimal Dependencies**: UV-based installation, no external databases
+- **Minimal Dependencies**: UV-based installation, no external databases (SQLite + `aiosqlite`)
 
 ## Target Users
 
@@ -50,12 +50,12 @@ Danube is a self-hosted CI/CD platform designed for teams requiring full infrast
 │                      Host Machine                       │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │              Danube Master (Python)               │  │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐  │  │
-│  │  │ FastAPI  │ │Scheduler │ │ Reaper & CaC     │  │  │
-│  │  │HTTP+gRPC │ │Cron/Hook │ │ Syncer           │  │  │
-│  │  └────┬─────┘ └────┬─────┘ └────┬─────────────┘  │  │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐   │  │
+│  │  │ FastAPI  │ │Scheduler │ │ Reaper & Blueprint│   │  │
+│  │  │HTTP+H2   │ │Cron/Hook │ │ Syncer           │   │  │
+│  │  └────┬─────┘ └────┬─────┘ └────┬─────────────┘   │  │
 │  │       └────────────┴─────────────┘                │  │
-│  │                    ▼                               │  │
+│  │                   ▼                               │  │
 │  │       ┌─────────────────────────────┐             │  │
 │  │       │      Master Core            │             │  │
 │  │       │  - Job Orchestrator         │             │  │
@@ -65,25 +65,25 @@ Danube is a self-hosted CI/CD platform designed for teams requiring full infrast
 │  │       └────────────┬────────────────┘             │  │
 │  └────────────────────┼──────────────────────────────┘  │
 │                       ▼                                 │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │          K3s Cluster (Cilium CNI)               │   │
-│  │  ┌──────────────────────────────────────────┐   │   │
-│  │  │         Pipeline Pod                     │   │   │
-│  │  │  ┌──────────────┐  ┌──────────────────┐  │   │   │
-│  │  │  │ Coordinator  │  │ Worker           │  │   │   │
-│  │  │  │ (Python SDK) │  │ (node:18, etc.)  │  │   │   │
-│  │  │  │              │  │ or Kaniko        │  │   │   │
-│  │  │  └──────────────┘  └──────────────────┘  │   │   │
-│  │  └──────────────────────────────────────────┘   │   │
-│  │  ┌──────────────────────────────────────────┐   │   │
-│  │  │  Dex OIDC + Registry Pods                │   │   │
-│  │  └──────────────────────────────────────────┘   │   │
-│  └─────────────────────────────────────────────────┘   │
-│  ┌────────────────────────────────────────────────┐    │
-│  │ SQLite: /var/lib/danube/danube.db (WAL mode)  │    │
-│  │ Logs: /var/lib/danube/logs/                   │    │
-│  │ Artifacts: /var/lib/danube/artifacts/         │    │
-│  └────────────────────────────────────────────────┘    │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │          K3s Cluster (Cilium CNI)               │    │
+│  │  ┌──────────────────────────────────────────┐   │    │
+│  │  │         Pipeline Pod                     │   │    │
+│  │  │  ┌──────────────┐  ┌──────────────────┐  │   │    │
+│  │  │  │ Coordinator  │  │ Worker           │  │   │    │
+│  │  │  │ (Python SDK) │  │ (node:18, etc.)  │  │   │    │
+│  │  │  │              │  │ or Kaniko        │  │   │    │
+│  │  │  └──────────────┘  └──────────────────┘  │   │    │
+│  │  └──────────────────────────────────────────┘   │    │
+│  │  ┌──────────────────────────────────────────┐   │    │
+│  │  │  Dex OIDC + Registry Pods                │   │    │
+│  │  └──────────────────────────────────────────┘   │    │
+│  └─────────────────────────────────────────────────┘    │
+│  ┌────────────────────────────────────────────────┐     │
+│  │ SQLite: /var/lib/danube/danube.db (WAL mode)   │     │
+│  │ Logs: /var/lib/danube/logs/                    │     │
+│  │ Artifacts: /var/lib/danube/artifacts/          │     │
+│  └────────────────────────────────────────────────┘     │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -103,7 +103,7 @@ Danube is a self-hosted CI/CD platform designed for teams requiring full infrast
 
 All communication flows through the Master process:
 ```
-Coordinator ──gRPC──▶ Master ──K8s Exec──▶ Worker
+Coordinator ──HTTP/2+JSON──▶ Master ──K8s Exec──▶ Worker
 ```
 
 This eliminates service discovery complexity and centralizes authentication and log aggregation.
@@ -114,7 +114,7 @@ Each pipeline runs in an isolated Kubernetes Pod that is deleted immediately aft
 
 ### GitOps for Configuration
 
-All configuration (pipelines, teams, users, global settings) lives in a Git repository. The Master periodically syncs this repository, ensuring version control and auditability.
+All configuration (pipelines, teams, users, global settings) lives in a Blueprint (GitOps) repository as JSON. The Master periodically syncs this repository, ensuring version control and auditability.
 
 ### Stateless Shell Execution
 

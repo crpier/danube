@@ -1,107 +1,131 @@
-# Configuration as Code Reference
+# Blueprint (GitOps) Reference
 
 ## Overview
 
-All Danube configuration (pipelines, users, teams, global settings) is managed via a Git repository using declarative YAML files.
+All Danube configuration (pipelines, users, teams, global settings) is managed via a Git repository using declarative JSON files. The Blueprint repository is the source of truth for GitOps configuration changes.
+
+## `danubefile.py` Quick Example
+
+```python
+from danube import pipeline, step
+
+@pipeline(name="Build")
+def build():
+    step.run("npm ci")
+    step.run("npm test")
+```
 
 ## Repository Structure
 
 ```
-danube-config/
-├── config.yaml           # Global settings
-├── users.yaml            # User definitions
-├── teams.yaml            # Team definitions
+danube-blueprint/
+├── config.json           # Global settings
+├── users.json            # User definitions
+├── teams.json            # Team definitions
 └── pipelines/
-    ├── frontend-build.yaml
-    ├── backend-build.yaml
-    └── deploy-prod.yaml
+    ├── frontend-build.json
+    ├── backend-build.json
+    └── deploy-prod.json
 ```
 
-## Global Configuration (config.yaml)
+## Blueprint JSON Schema
 
-```yaml
-apiVersion: danube.dev/v1
-kind: Config
-metadata:
-  name: global
+Blueprint files are validated against a JSON Schema before sync. Planned schema location: `docs/configuration/blueprint.schema.json`.
 
-spec:
-  # Server settings (optional overrides)
-  server:
-    bind_address: "0.0.0.0:8080"
-    data_dir: "/var/lib/danube"
+## Global Configuration (`config.json`)
 
-  # Kubernetes settings
-  kubernetes:
-    namespace_jobs: "danube-jobs"
-    coordinator_image: "danube-coordinator:latest"
-
-  # Retention policies
-  retention:
-    logs_days: 30
-    artifacts_days: 14
-    registry_images_days: 30
-
-  # Observability
-  observability:
-    otel_endpoint: "http://otel-collector:4317"
-    metrics_enabled: true
-    traces_enabled: true
-
-  # Egress allowlist (DNS-based filtering via Cilium)
-  egress_allowlist:
-    - "registry.npmjs.org"
-    - "pypi.org"
-    - "*.github.com"
-    - "registry.danube-system"
-
-  # Git authentication for pipeline repositories
-  git_authentication:
-    # GitHub App
-    - type: github_app
-      name: myorg-app
-      app_id: "123456"
-      installation_id: "78910"
-      private_key_secret: "github-app-myorg-key"
-      match_patterns:
-        - "github.com/myorg/*"
-
-    # GitLab token
-    - type: gitlab_token
-      name: gitlab-internal
-      url: "https://gitlab.company.com"
-      token_secret: "gitlab-token"
-      match_patterns:
-        - "gitlab.company.com/*"
-
-    # SSH key fallback
-    - type: ssh_key
-      name: fallback
-      private_key_path: "/var/lib/danube/keys/git_fallback_key"
-      match_patterns:
-        - "*"
+```json
+{
+  "apiVersion": "danube.dev/v1",
+  "kind": "Config",
+  "metadata": {
+    "name": "global"
+  },
+  "spec": {
+    "server": {
+      "bind_address": "0.0.0.0:8080",
+      "data_dir": "/var/lib/danube"
+    },
+    "kubernetes": {
+      "namespace_jobs": "danube-jobs",
+      "coordinator_image": "danube-coordinator:latest"
+    },
+    "retention": {
+      "logs_days": 30,
+      "artifacts_days": 14,
+      "registry_images_days": 30
+    },
+    "observability": {
+      "otel_endpoint": "http://otel-collector:4317",
+      "metrics_enabled": true,
+      "traces_enabled": true
+    },
+    "egress_allowlist": [
+      "registry.npmjs.org",
+      "pypi.org",
+      "*.github.com",
+      "registry.danube-system"
+    ],
+    "git_authentication": [
+      {
+        "type": "github_app",
+        "name": "myorg-app",
+        "app_id": "123456",
+        "installation_id": "78910",
+        "private_key_secret": "github-app-myorg-key",
+        "match_patterns": ["github.com/myorg/*"]
+      },
+      {
+        "type": "gitlab_token",
+        "name": "gitlab-internal",
+        "url": "https://gitlab.company.com",
+        "token_secret": "gitlab-token",
+        "match_patterns": ["gitlab.company.com/*"]
+      },
+      {
+        "type": "ssh_key",
+        "name": "fallback",
+        "private_key_path": "/var/lib/danube/keys/git_fallback_key",
+        "match_patterns": ["*"]
+      }
+    ]
+  }
+}
 ```
 
-## User Definitions (users.yaml)
+## User Definitions (`users.json`)
 
-```yaml
-apiVersion: danube.dev/v1
-kind: User
-metadata:
-  name: alice
-spec:
-  email: alice@example.com
-  # Generate with: python -c "import bcrypt; print(bcrypt.hashpw(b'password', bcrypt.gensalt()).decode())"
-  password_hash: "$2b$12$KIXxKj5M..."
+```json
+[
+  {
+    "apiVersion": "danube.dev/v1",
+    "kind": "User",
+    "metadata": {
+      "name": "alice"
+    },
+    "spec": {
+      "email": "alice@example.com",
+      "password_hash": "$2b$12$KIXxKj5M..."
+    }
+  },
+  {
+    "apiVersion": "danube.dev/v1",
+    "kind": "User",
+    "metadata": {
+      "name": "bob"
+    },
+    "spec": {
+      "email": "bob@example.com",
+      "password_hash": "$2b$12$..."
+    }
+  }
+]
+```
 
----
-apiVersion: danube.dev/v1
-kind: User
-metadata:
-  name: bob
-spec:
-  email: bob@example.com
-  password_hash: "$2b$12$..."
+Generate password hashes with:
+
+```bash
+python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt()).decode())"
 ```
 
 ### Password Hash Generation
@@ -114,128 +138,101 @@ python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt(
 htpasswd -bnBC 12 "" YOUR_PASSWORD | tr -d ':\n'
 ```
 
-## Team Definitions (teams.yaml)
+## Team Definitions (`teams.json`)
 
-```yaml
-apiVersion: danube.dev/v1
-kind: Team
-metadata:
-  name: engineering
-spec:
-  members:
-    - alice@example.com
-    - bob@example.com
-
----
-apiVersion: danube.dev/v1
-kind: Team
-metadata:
-  name: platform
-spec:
-  members:
-    - alice@example.com
-  global_admin: true  # Full access to all pipelines
+```json
+[
+  {
+    "apiVersion": "danube.dev/v1",
+    "kind": "Team",
+    "metadata": {
+      "name": "engineering"
+    },
+    "spec": {
+      "members": ["alice@example.com", "bob@example.com"]
+    }
+  },
+  {
+    "apiVersion": "danube.dev/v1",
+    "kind": "Team",
+    "metadata": {
+      "name": "platform"
+    },
+    "spec": {
+      "members": ["alice@example.com"],
+      "global_admin": true
+    }
+  }
+]
 ```
 
-## Pipeline Definition (pipelines/frontend-build.yaml)
+## Pipeline Definition (`pipelines/frontend-build.json`)
 
-```yaml
-apiVersion: danube.dev/v1
-kind: Pipeline
-metadata:
-  name: frontend-build
-  team: engineering  # Owning team
-
-spec:
-  # Git repository
-  repository: https://github.com/myorg/frontend
-  branch_filter:
-    - "main"
-    - "develop"
-    - "release/*"  # Supports glob patterns
-
-  # Triggers
-  triggers:
-    - on: push
-      branches:
-        - "main"
-        - "develop"
-    
-    - on: pull_request
-    
-    - on: cron
-      schedule: "0 0 * * *"  # Daily at midnight UTC
-
-  # Pipeline script in app repo
-  script: danubefile.py
-
-  # Execution limits
-  max_duration_seconds: 3600  # 1 hour timeout
-  workspace_size_gb: 10       # Workspace volume size
-
-  # Worker container
-  worker:
-    image: node:18-alpine
-    resources:
-      requests:
-        cpu: "500m"
-        memory: "512Mi"
-      limits:
-        cpu: "2000m"
-        memory: "2Gi"
-
-  # Permissions
-  permissions:
-    - team: engineering
-      level: admin
-    - team: qa
-      level: read
+```json
+{
+  "apiVersion": "danube.dev/v1",
+  "kind": "Pipeline",
+  "metadata": {
+    "name": "frontend-build",
+    "team": "engineering"
+  },
+  "spec": {
+    "repository": "https://github.com/myorg/frontend",
+    "branch_filter": ["main", "develop", "release/*"],
+    "triggers": [
+      {"on": "push", "branches": ["main", "develop"]},
+      {"on": "pull_request"},
+      {"on": "cron", "schedule": "0 0 * * *"}
+    ],
+    "script": "danubefile.py",
+    "max_duration_seconds": 3600,
+    "workspace_size_gb": 10,
+    "worker": {
+      "image": "node:18-alpine",
+      "resources": {
+        "requests": {"cpu": "500m", "memory": "512Mi"},
+        "limits": {"cpu": "2000m", "memory": "2Gi"}
+      }
+    },
+    "permissions": [
+      {"team": "engineering", "level": "admin"},
+      {"team": "qa", "level": "read"}
+    ]
+  }
+}
 ```
 
-## Pipeline Script (danubefile.py in app repo)
+## Pipeline Script (`danubefile.py` in app repo)
 
 ```python
 from danube import pipeline, step, ctx, secrets, artifacts
 
 @pipeline(name="Frontend Build")
 def build():
-    # Context variables available
     print(f"Building {ctx.repo} on {ctx.branch}")
     print(f"Commit: {ctx.commit_sha}")
-    print(f"Trigger: {ctx.trigger_type}")  # webhook, cron, manual
-    
-    # Step 1: Install dependencies
-    step.run(
-        "npm ci",
-        name="Install Dependencies"
-    )
-    
-    # Step 2: Run tests
+    print(f"Trigger: {ctx.trigger_type}")
+
+    step.run("npm ci", name="Install Dependencies")
+
     exit_code = step.run(
         "npm test -- --coverage",
         name="Run Tests",
-        check=False  # Don't fail pipeline if tests fail
+        check=False
     )
-    
-    # Upload coverage regardless of test result
+
     artifacts.upload("coverage/", name="coverage-report")
-    
+
     if exit_code != 0:
         print("Tests failed, skipping build")
         return
-    
-    # Step 3: Build (only on main branch)
+
     if ctx.branch == "main":
-        step.run(
-            "npm run build",
-            name="Build Production"
-        )
-        
+        step.run("npm run build", name="Build Production")
         artifacts.upload("dist/", name="production-build")
-        
-        # Step 4: Build Docker image with Kaniko
+
         api_token = secrets.get("DOCKER_HUB_TOKEN")
-        
+
         step.run(
             f"/kaniko/executor "
             f"--context=/workspace "
@@ -248,6 +245,8 @@ def build():
             env={"DOCKER_CONFIG": "/kaniko/.docker"}
         )
 ```
+
+`step.run()` commands are escaped internally with `shlex` before execution; no manual escaping is required in `danubefile.py`.
 
 ## Context Variables
 
@@ -268,7 +267,7 @@ Available in `danubefile.py` via `ctx` object:
 
 ### step.run()
 
-Execute command in Worker container.
+Execute command in Worker container. Commands are escaped with `shlex` before execution to prevent accidental shell injection.
 
 ```python
 step.run(
@@ -318,7 +317,7 @@ api_key = secrets.get("API_KEY")
 db_password = secrets.get("DB_PASSWORD")
 ```
 
-Secrets must be defined via API or CaC (future feature).
+Secrets must be defined via API or Blueprint (future feature).
 
 ### artifacts.upload()
 
@@ -346,9 +345,9 @@ artifacts.upload("dist/app.css", name="app-css")
 
 ## Validation
 
-CaC YAML files are validated on sync:
+Blueprint JSON files are validated on sync using the published JSON Schema:
 
-- Schema validation (Pydantic models)
+- Schema validation (JSON Schema)
 - Reference validation (teams exist, pipelines reference valid teams)
 - Duplicate detection (no duplicate pipeline names)
 
@@ -413,4 +412,4 @@ def build():
 3. **Cache dependencies**: Use Kaniko caching for Docker builds
 4. **Parameterize**: Use secrets for credentials, not hardcoded values
 5. **Test locally**: Run `danubefile.py` with Danube CLI before pushing
-6. **Version control**: Treat CaC repo as infrastructure code (review PRs, require approvals)
+6. **Version control**: Treat the Blueprint repo as infrastructure code (review PRs, require approvals)

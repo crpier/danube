@@ -9,9 +9,10 @@ All communication flows through the Master process:
 │ Coordinator │
 │  Container  │
 └──────┬──────┘
-       │ gRPC
-       │ (plaintext, localhost in pod network namespace)
-       ▼
+        │ HTTP/2 + JSON
+        │ (plaintext, localhost in pod network namespace)
+        ▼
+
 ┌─────────────┐
 │   Master    │◀─────────────────┐
 │   Process   │                  │
@@ -36,19 +37,39 @@ All communication flows through the Master process:
 
 ## Communication Channels
 
-### Coordinator → Master (gRPC)
+### Coordinator → Master (HTTP/2 JSON)
 
-**Protocol**: gRPC over HTTP/2 (plaintext)
+**Protocol**: HTTP/2 with JSON payloads (plaintext)
 
 **Endpoint**: `master.danube-system:9000`
 
-**Services**:
-```protobuf
-service JobService {
-  rpc RunStep(RunStepRequest) returns (RunStepResponse);
-  rpc GetSecret(GetSecretRequest) returns (GetSecretResponse);
-  rpc UploadArtifact(stream UploadArtifactRequest) returns (UploadArtifactResponse);
-  rpc ReportStatus(ReportStatusRequest) returns (ReportStatusResponse);
+**Notes**: Coordinator requests are synchronous; log streaming remains on the K8s exec WebSocket and is backpressured by Master disk writes.
+
+**Endpoints**:
+```http
+POST /rpc/run-step
+POST /rpc/get-secret
+POST /rpc/upload-artifact  # streamed
+POST /rpc/report-status
+```
+
+**Example request**:
+```json
+{
+  "job_id": "abc123",
+  "step_name": "Install Dependencies",
+  "command": "npm ci",
+  "image": "node:18-alpine",
+  "env": {"CI": "true"},
+  "timeout_seconds": 3600
+}
+```
+
+**Example response**:
+```json
+{
+  "exit_code": 0,
+  "duration_ms": 1234
 }
 ```
 
@@ -143,19 +164,22 @@ spec:
 
 ### Allowlist Configuration
 
-Defined in CaC repo `config.yaml`:
+Defined in Blueprint repo `config.json`:
 
-```yaml
-apiVersion: danube.dev/v1
-kind: Config
-metadata:
-  name: global
-spec:
-  egress_allowlist:
-    - "registry.npmjs.org"
-    - "pypi.org"
-    - "*.cdn.example.com"  # Supports wildcards
-    - "registry.danube-system"  # Internal registry
+```json
+{
+  "apiVersion": "danube.dev/v1",
+  "kind": "Config",
+  "metadata": {"name": "global"},
+  "spec": {
+    "egress_allowlist": [
+      "registry.npmjs.org",
+      "pypi.org",
+      "*.cdn.example.com",
+      "registry.danube-system"
+    ]
+  }
+}
 ```
 
 Master applies this as Cilium NetworkPolicy when configuration syncs.
@@ -176,7 +200,7 @@ step.run("curl https://evil.com")
 
 | Service | Namespace | Endpoint | Purpose |
 |---------|-----------|----------|---------|
-| Master gRPC | `danube-system` | `master.danube-system:9000` | Coordinator communication |
+| Master RPC | `danube-system` | `master.danube-system:9000` | Coordinator communication |
 | Dex | `danube-system` | `dex.danube-system:5556` | OIDC login |
 | Registry | `danube-system` | `registry.danube-system:5000` | Container images |
 
@@ -201,7 +225,7 @@ master.danube-system → 10.43.x.x (from any namespace)
 | Service | Port | Protocol | Purpose |
 |---------|------|----------|---------|
 | Master HTTP | 8080 | HTTP | REST API, webhooks, UI |
-| Master gRPC | 9000 | gRPC | Coordinator communication |
+| Master RPC | 9000 | HTTP/2 | Coordinator communication |
 | Dex | 5556 | HTTP | OIDC login |
 | Registry | 5000 | HTTP | Docker Registry API |
 
@@ -257,25 +281,25 @@ master.danube-system → 10.43.x.x (from any namespace)
 ```
 
 **Configuration Sharing**:
-- Use same CaC repository
+- Use same Blueprint repository
 - Different branches or directories per environment
 - Or separate repos with shared templates
 
-```yaml
-# dev-config.yaml
-config_repo:
-  url: "git@github.com:myorg/danube-config.git"
-  branch: "dev"
+```toml
+# dev-config.toml
+[config_repo]
+url = "git@github.com:myorg/danube-blueprint.git"
+branch = "dev"
 
-# staging-config.yaml
-config_repo:
-  url: "git@github.com:myorg/danube-config.git"
-  branch: "staging"
+# staging-config.toml
+[config_repo]
+url = "git@github.com:myorg/danube-blueprint.git"
+branch = "staging"
 
-# prod-config.yaml
-config_repo:
-  url: "git@github.com:myorg/danube-config.git"
-  branch: "main"
+# prod-config.toml
+[config_repo]
+url = "git@github.com:myorg/danube-blueprint.git"
+branch = "main"
 ```
 
 ## Load Balancing
@@ -323,9 +347,9 @@ Master streams logs to:
 - Compress logs async (future feature)
 - Rate limit SSE clients if needed
 
-### gRPC Throughput
+### HTTP/2 Control Plane Throughput
 
-Coordinator → Master gRPC calls are frequent (every step execution).
+Coordinator → Master HTTP/2 calls are frequent (every step execution).
 
 **Typical load**: 10-50 RPC/sec per job.
 

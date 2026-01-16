@@ -182,11 +182,11 @@ sudo journalctl -u danube -f
 ### Upgrading to 1.1.0 (Example)
 
 **Breaking changes**:
-- `config.yaml` schema updated: `retention` moved under `spec.retention`
+- `config.json` schema updated: `retention` moved under `spec.retention`
 - Database migration adds `priority` column to `jobs` table
 
 **Migration steps**:
-1. Update CaC repository: Move `retention` config
+1. Update Blueprint repository: Move `retention` config
 2. Follow standard upgrade procedure
 3. Migration automatically adds `priority` column (default `medium`)
 
@@ -338,15 +338,14 @@ sqlite3 /var/lib/danube/danube.db "UPDATE alembic_version SET version_num='<revi
 uv run alembic upgrade head
 ```
 
-### CaC sync fails after upgrade
+### Blueprint sync fails after upgrade
 
 ```bash
-# Check for schema changes in config.yaml
-danube cac validate --config=/path/to/config.yaml
-
-# Force sync
-danube cac sync --force
+# Check for schema changes in config.json
+danube blueprint validate --config=/path/to/config.json
+danube blueprint sync --force
 ```
+
 
 ## Downtime Estimation
 

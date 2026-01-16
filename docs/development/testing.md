@@ -15,7 +15,7 @@ tests/
 │   └── ...
 ├── integration/            # Integration tests (with K8s, DB)
 │   ├── test_job_execution.py
-│   ├── test_cac_sync.py
+│   ├── test_blueprint_sync.py
 │   └── ...
 ├── e2e/                    # End-to-end tests (full system)
 │   ├── test_pipeline_flow.py
@@ -128,33 +128,22 @@ async def test_pod_creation():
 ### Testing Database Operations
 
 ```python
-from danube.db.repos import JobRepository
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+import aiosqlite
+from danube.db.queries import JobQueries
 
 async def test_job_repository():
-    """Test job repository with in-memory SQLite."""
-    # Create in-memory database
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    
-    # Create tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    
-    # Use repository
-    async with AsyncSession(engine) as session:
-        repo = JobRepository(session)
-        
-        job = await repo.create(
+    """Test job queries with in-memory SQLite."""
+    async with aiosqlite.connect(":memory:") as db:
+        await db.executescript(SCHEMA_SQL)
+
+        queries = JobQueries(db)
+
+        job = await queries.create_job(
             pipeline_id="test-pipeline",
             trigger_type="manual"
         )
-        
-        assert job.id is not None
-        
-        # Retrieve job
-        retrieved = await repo.get(job.id)
-        assert retrieved.pipeline_id == "test-pipeline"
 ```
+
 
 ### Property-Based Testing
 
@@ -211,38 +200,37 @@ async def test_pod_lifecycle():
     await k8s_client.delete_pod(pod.metadata.name)
 ```
 
-### CaC Sync Integration Tests
+### Blueprint Sync Integration Tests
 
 ```python
 import tempfile
 import git
-from danube.cac.syncer import CaCSyncer
+from danube.blueprint.syncer import BlueprintSyncer
 
-async def test_cac_sync():
-    """Test CaC repository sync."""
+async def test_blueprint_sync():
+    """Test Blueprint repository sync."""
     # Create temporary Git repo
     with tempfile.TemporaryDirectory() as tmpdir:
         repo = git.Repo.init(tmpdir)
-        
+
         # Create config file
-        config_file = Path(tmpdir) / "config.yaml"
+        config_file = Path(tmpdir) / "config.json"
         config_file.write_text("""
-apiVersion: danube.dev/v1
-kind: Config
-metadata:
-  name: global
-spec:
-  retention:
-    logs_days: 30
+{
+  \"apiVersion\": \"danube.dev/v1\",
+  \"kind\": \"Config\",
+  \"metadata\": {\"name\": \"global\"},
+  \"spec\": {\"retention\": {\"logs_days\": 30}}
+}
 """)
-        
-        repo.index.add(["config.yaml"])
+
+        repo.index.add(["config.json"])
         repo.index.commit("Initial config")
-        
+
         # Sync
-        syncer = CaCSyncer(repo_url=f"file://{tmpdir}")
+        syncer = BlueprintSyncer(repo_url=f"file://{tmpdir}")
         await syncer.sync()
-        
+
         # Verify config loaded
         config = await syncer.get_config()
         assert config.spec.retention.logs_days == 30
@@ -255,15 +243,17 @@ spec:
 ```python
 async def test_full_pipeline_execution():
     """Test complete pipeline from trigger to completion."""
-    # Create test pipeline in CaC repo
+    # Create test pipeline in Blueprint repo
     pipeline_config = """
-apiVersion: danube.dev/v1
-kind: Pipeline
-metadata:
-  name: test-pipeline
-spec:
-  repository: https://github.com/test/repo
-  script: danubefile.py
+{
+  \"apiVersion\": \"danube.dev/v1\",
+  \"kind\": \"Pipeline\",
+  \"metadata\": {\"name\": \"test-pipeline\"},
+  \"spec\": {
+    \"repository\": \"https://github.com/test/repo\",
+    \"script\": \"danubefile.py\"
+  }
+}
 """
     
     # Trigger webhook
@@ -300,26 +290,14 @@ spec:
 ```python
 # tests/fixtures/db_fixtures.py
 from snektest import fixture
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+import aiosqlite
 
 @fixture
-async def db_engine():
-    """Provide in-memory SQLite engine."""
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    
-    yield engine
-    
-    await engine.dispose()
-
-@fixture
-async def db_session(db_engine):
-    """Provide database session."""
-    async with AsyncSession(db_engine) as session:
-        yield session
-        await session.rollback()
+async def db_connection():
+    """Provide in-memory SQLite connection."""
+    async with aiosqlite.connect(":memory:") as db:
+        await db.executescript(SCHEMA_SQL)
+        yield db
 ```
 
 ### K8s Fixtures

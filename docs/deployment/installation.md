@@ -14,7 +14,7 @@
 
 ### Required Software
 
-- Python 3.11+
+- Python 3.14+
 - [UV](https://github.com/astral-sh/uv) package manager
 - Git
 - K3s (installed by Danube installer)
@@ -22,27 +22,37 @@
 
 ## Installation Methods
 
-### Method 1: Automated Installer (Recommended)
+### Method 1: Helm Chart (Recommended)
+
+The Helm chart deploys Danube, Dex, and the registry into your K3s cluster with local-path storage and best-effort durability.
 
 ```bash
-# Download and run installer
-curl -fsSL https://get.danube.dev | bash
+helm repo add danube https://charts.danube.dev
+helm repo update
 
-# Or with specific version
-curl -fsSL https://get.danube.dev | bash -s -- --version=1.0.0
+helm upgrade --install danube danube/danube \
+  --namespace danube-system \
+  --create-namespace \
+  --values values.yaml
 ```
 
-**What the installer does**:
-1. Installs K3s with Cilium CNI (Flannel disabled)
-2. Installs Cilium CLI
-3. Creates `/var/lib/danube` directory structure
-4. Generates encryption and signing keys
-5. Generates SSH deploy key for CaC repository
-6. Installs Danube via UV
-7. Creates systemd service file
-8. Starts Danube service
+**What the chart does**:
+1. Creates `danube-system` and `danube-jobs` namespaces
+2. Deploys Master, Dex, and the registry
+3. Provisions PVCs for SQLite, logs, artifacts, and registry storage
+4. Applies default NetworkPolicies and services
+5. Enables Blueprint sync configuration
+6. Pins stateful workloads to the node with local-path volumes
 
-### Method 2: Manual Installation
+### Method 2: Bootstrap Installer (Optional)
+
+If you want a single-command install on a fresh host, use the bootstrap installer. It installs K3s + Cilium and then runs the Helm chart.
+
+```bash
+curl -fsSL https://get.danube.dev | bash
+```
+
+### Method 3: Manual Installation
 
 #### Step 1: Install K3s
 
@@ -94,8 +104,8 @@ chmod 600 /var/lib/danube/keys/encryption.key
 ssh-keygen -t ed25519 -f /var/lib/danube/keys/signing.key -N '' -C "danube-provenance"
 chmod 600 /var/lib/danube/keys/signing.key
 
-# Git deploy key for CaC repository
-ssh-keygen -t ed25519 -f /var/lib/danube/keys/git_deploy_key -N '' -C "danube-cac"
+# Git deploy key for Blueprint repository
+ssh-keygen -t ed25519 -f /var/lib/danube/keys/git_deploy_key -N '' -C "danube-blueprint"
 chmod 600 /var/lib/danube/keys/git_deploy_key
 ```
 
@@ -115,13 +125,13 @@ uv sync
 uv run danube --version
 ```
 
-#### Step 6: Configure CaC Repository
+#### Step 6: Configure Blueprint Repository
 
 Create `/etc/danube/danube.toml`:
 
 ```toml
 [config_repo]
-url = "git@github.com:yourorg/danube-config.git"
+url = "git@github.com:yourorg/danube-blueprint.git"
 branch = "main"
 sync_interval = "60s"
 
@@ -137,6 +147,8 @@ cat /var/lib/danube/keys/git_deploy_key.pub
 
 # Add this to your Git repository's deploy keys (read-only access)
 ```
+
+Optionally configure a webhook in the Blueprint repository to trigger immediate syncs on push (fallback polling still runs every `sync_interval`).
 
 #### Step 7: Create Systemd Service
 
@@ -194,61 +206,72 @@ sudo journalctl -u danube -f
 
 ## Post-Installation Setup
 
-### 1. Create CaC Repository
+### 1. Create Blueprint Repository
 
 Create a Git repository with initial configuration:
 
 ```bash
-mkdir danube-config
-cd danube-config
+mkdir danube-blueprint
+cd danube-blueprint
 
 # Create initial config
-cat > config.yaml <<EOF
-apiVersion: danube.dev/v1
-kind: Config
-metadata:
-  name: global
-spec:
-  retention:
-    logs_days: 30
-    artifacts_days: 14
-    registry_images_days: 30
-  egress_allowlist:
-    - "registry.npmjs.org"
-    - "pypi.org"
-    - "github.com"
-    - "registry.danube-system"
+cat > config.json <<EOF
+{
+  "apiVersion": "danube.dev/v1",
+  "kind": "Config",
+  "metadata": {"name": "global"},
+  "spec": {
+    "retention": {
+      "logs_days": 30,
+      "artifacts_days": 14,
+      "registry_images_days": 30
+    },
+    "egress_allowlist": [
+      "registry.npmjs.org",
+      "pypi.org",
+      "github.com",
+      "registry.danube-system"
+    ]
+  }
+}
 EOF
 
 # Create initial user
-cat > users.yaml <<EOF
-apiVersion: danube.dev/v1
-kind: User
-metadata:
-  name: admin
-spec:
-  email: admin@example.com
-  password_hash: "\$2b\$12\$KIXxKj5M..."  # Generate with bcrypt
+cat > users.json <<EOF
+[
+  {
+    "apiVersion": "danube.dev/v1",
+    "kind": "User",
+    "metadata": {"name": "admin"},
+    "spec": {
+      "email": "admin@example.com",
+      "password_hash": "\$2b\$12\$KIXxKj5M..."
+    }
+  }
+]
 EOF
 
 # Create initial team
-cat > teams.yaml <<EOF
-apiVersion: danube.dev/v1
-kind: Team
-metadata:
-  name: admins
-spec:
-  members:
-    - admin@example.com
-  global_admin: true
+cat > teams.json <<EOF
+[
+  {
+    "apiVersion": "danube.dev/v1",
+    "kind": "Team",
+    "metadata": {"name": "admins"},
+    "spec": {
+      "members": ["admin@example.com"],
+      "global_admin": true
+    }
+  }
+]
 EOF
 
 mkdir pipelines
 
 git init
 git add .
-git commit -m "Initial Danube configuration"
-git remote add origin git@github.com:yourorg/danube-config.git
+git commit -m "Initial Danube blueprint"
+git remote add origin git@github.com:yourorg/danube-blueprint.git
 git push -u origin main
 ```
 
@@ -270,7 +293,7 @@ open http://localhost:8080
 
 1. Open browser to `http://localhost:8080`
 2. Redirected to Dex login page
-3. Enter credentials from `users.yaml`
+3. Enter credentials from `users.json`
 4. Redirected back to Danube UI
 
 ## Network Configuration
@@ -351,18 +374,20 @@ sudo journalctl -u danube -n 100 --no-pager
 **Common issues**:
 - K3s not running: `sudo systemctl status k3s`
 - Invalid config: Check `/etc/danube/danube.toml` syntax
-- CaC repo auth failed: Verify deploy key added to Git repo
+- Blueprint repo auth failed: Verify deploy key added to Git repo
 - Database locked: Check file permissions on `/var/lib/danube/danube.db`
 
-### CaC sync failing
+
+### Blueprint sync failing
 
 ```bash
-# Check CaC sync logs
-sudo journalctl -u danube | grep "cac_sync"
+# Check Blueprint sync logs
+sudo journalctl -u danube | grep "blueprint_sync"
 
 # Manual sync
-danube cac sync --verbose
+ danube blueprint sync --verbose
 ```
+
 
 ### Kubernetes pods not starting
 

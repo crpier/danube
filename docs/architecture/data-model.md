@@ -123,7 +123,7 @@ CREATE INDEX idx_pipeline_permissions_team_id ON pipeline_permissions(team_id);
     ├── encryption.key     # AES-256-GCM key (32 bytes)
     ├── signing.key        # Ed25519 private key for provenance
     ├── signing.key.pub    # Ed25519 public key
-    ├── git_deploy_key     # SSH private key for CaC repo
+    ├── git_deploy_key     # SSH private key for Blueprint repo
     └── git_deploy_key.pub # SSH public key (add to Git repo deploy keys)
 ```
 
@@ -147,7 +147,7 @@ CREATE INDEX idx_pipeline_permissions_team_id ON pipeline_permissions(team_id);
 
 ### git_deploy_key
 
-- **Purpose**: Clone CaC repository
+- **Purpose**: Clone Blueprint repository
 - **Algorithm**: Ed25519 or RSA
 - **Format**: SSH private key
 - **Permissions**: 0600
@@ -166,14 +166,18 @@ PRAGMA busy_timeout = 5000;          # Wait up to 5s for locks
 
 ## Data Retention
 
-Controlled by Reaper component based on CaC config:
+Controlled by Reaper component based on Blueprint config:
 
-```yaml
-spec:
-  retention:
-    logs_days: 30
-    artifacts_days: 14
-    registry_images_days: 30
+```json
+{
+  "spec": {
+    "retention": {
+      "logs_days": 30,
+      "artifacts_days": 14,
+      "registry_images_days": 30
+    }
+  }
+}
 ```
 
 - Logs older than `logs_days` deleted from disk and database
@@ -207,11 +211,11 @@ tar czf danube-backup-$(date +%Y%m%d).tar.gz /var/lib/danube/
 
 ## Migrations
 
-Database migrations managed by Alembic:
+Database migrations are SQL files applied with Alembic:
 
 ```bash
-# Generate migration after schema changes
-uv run alembic revision --autogenerate -m "Add new column"
+# Generate migration (manual SQL)
+uv run alembic revision -m "Add new column"
 
 # Apply migrations
 uv run alembic upgrade head

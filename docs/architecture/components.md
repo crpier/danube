@@ -17,17 +17,17 @@
 - `/metrics` - Prometheus metrics
 - `/` - Frontend SPA
 
-### gRPC Server
+### HTTP/2 Control Plane
 
-**Responsibility**: Internal RPC for Coordinator ↔ Master communication
+**Responsibility**: Internal Coordinator ↔ Master communication
 
-**Technology**: grpcio, grpcio-tools
+**Technology**: HTTP/2 with JSON payloads
 
-**Services**:
-- `JobService.RunStep()` - Execute command in Worker container
-- `JobService.GetSecret()` - Retrieve decrypted secret
-- `JobService.UploadArtifact()` - Upload build artifact
-- `JobService.ReportStatus()` - Update job status
+**Endpoints**:
+- `POST /rpc/run-step` - Execute command in Worker container
+- `POST /rpc/get-secret` - Retrieve decrypted secret
+- `POST /rpc/upload-artifact` - Upload build artifact (streamed)
+- `POST /rpc/report-status` - Update job status
 
 ### Scheduler
 
@@ -52,7 +52,7 @@
 - Delete registry images older than `retention.registry_images_days`
 - Runs daily at 03:00 UTC
 
-### CaC Syncer
+### Blueprint Syncer
 
 **Responsibility**: Poll Git repository for configuration changes, sync to database
 
@@ -60,9 +60,9 @@
 
 **Behavior**:
 - Polls every `config_repo.sync_interval` (default 60s)
-- Parses YAML files in CaC repo
-- Validates schema with Pydantic
-- Updates SQLite via SQLAlchemy transactions
+- Parses JSON files in Blueprint repo
+- Validates schema with JSON Schema
+- Updates SQLite via `aiosqlite` queries
 - Logs diff of changes applied
 
 ### Master Core
@@ -80,7 +80,7 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 - Create Pod manifest with Coordinator + Worker containers
 - Submit to K8s API
 - Wait for Pod ready
-- Monitor execution via gRPC calls from Coordinator
+- Monitor execution via HTTP/2 JSON calls from Coordinator
 - Stream logs to disk and SSE clients
 - Update job status in database
 - Delete Pod on completion
@@ -110,7 +110,7 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 
 ### SecretService
 
-**Responsibility**: In-memory cache of decrypted secrets, served via gRPC
+**Responsibility**: In-memory cache of decrypted secrets, served via HTTP/2 JSON
 
 **Technology**: Python dict, cryptography library (AES-256-GCM)
 
@@ -118,7 +118,7 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 1. Job starts → Master loads pipeline secrets from SQLite
 2. Decrypt secrets using encryption key from `/var/lib/danube/keys/encryption.key`
 3. Cache in memory keyed by `(job_id, secret_key)`
-4. Coordinator requests via gRPC
+4. Coordinator requests via HTTP/2 JSON
 5. Master validates job_id is active and has access
 6. Return secret value
 7. Clear cache when job completes
@@ -139,12 +139,12 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 
 **Responsibility**: OIDC provider for user authentication
 
-**Configuration**: Users defined in CaC repository `users.yaml`
+**Configuration**: Users defined in Blueprint repository `users.json`
 
 **Flow**:
 1. User visits Danube UI
 2. Redirect to Dex login page
-3. Dex validates credentials against CaC user list
+3. Dex validates credentials against Blueprint user list
 4. Issue JWT token with `sub` claim
 5. Danube validates JWT and extracts user identity
 
@@ -166,17 +166,17 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 
 **Schema**: See [Data Model](./data-model.md)
 
-**Access**: SQLAlchemy 2.0 async engine
+**Access**: `aiosqlite` with direct SQL queries
 
 ## Pipeline Pod Containers
 
 ### Coordinator Container
 
-**Image**: `danube-coordinator:latest` (Python 3.11 slim)
+**Image**: `danube-coordinator:latest` (Python 3.14 slim)
 
 **Contains**:
 - Danube Python SDK
-- gRPC client
+- HTTP/2 JSON client
 - User's `danubefile.py` (mounted from workspace)
 
 **Does NOT contain**: Build tools, compilers, package managers
@@ -185,12 +185,12 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 1. Container starts
 2. SDK imports `danubefile.py`
 3. Executes pipeline function
-4. Each `step.run()` → gRPC call to Master
+4. Each `step.run()` → HTTP/2 JSON call to Master
 5. Exits when pipeline completes
 
 ### Worker Container
 
-**Image**: User-defined (e.g., `node:18`, `python:3.11`, `gcr.io/kaniko-project/executor`)
+**Image**: User-defined (e.g., `node:18`, `python:3.14`, `gcr.io/kaniko-project/executor`)
 
 **Purpose**: Execute shell commands or build Docker images
 
@@ -207,10 +207,10 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 | Layer | Technology |
 |-------|------------|
 | HTTP Framework | FastAPI + Uvicorn |
-| gRPC | grpcio + grpcio-tools |
+| HTTP/2 Control Plane | JSON over HTTP/2 |
 | Async Runtime | asyncio + uvloop |
 | K8s Client | kubernetes (official) |
-| Database | SQLAlchemy 2.0 async + aiosqlite |
+| Database | aiosqlite (raw SQL) |
 | Git Client | GitPython |
 | Validation | Pydantic v2 |
 | Encryption | cryptography |

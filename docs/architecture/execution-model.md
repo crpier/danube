@@ -6,7 +6,7 @@ Each pipeline execution spawns a single Kubernetes Pod containing two containers
 
 | Container | Image | Role |
 |-----------|-------|------|
-| **Coordinator** | `danube-coordinator:latest` | Executes `danubefile.py`, calls Master via gRPC |
+| **Coordinator** | `danube-coordinator:latest` | Executes `danubefile.py`, calls Master via HTTP/2 JSON |
 | **Worker** | User-defined (e.g., `node:18`, Kaniko) | Receives shell commands from Master via K8s Exec API |
 
 ### Why Two Containers?
@@ -33,7 +33,7 @@ Each pipeline execution spawns a single Kubernetes Pod containing two containers
 5. User code calls step.run("npm install")
          │
          ▼
-6. Coordinator → gRPC → Master: RunStep(cmd="npm install")
+6. Coordinator → HTTP/2 JSON → Master: RunStep(cmd="npm install")
          │
          ▼
 7. Master → K8s Exec API: Run in Worker container
@@ -59,7 +59,7 @@ Each pipeline execution spawns a single Kubernetes Pod containing two containers
 All communication flows through the Master (hub-and-spoke):
 
 ```
-Coordinator ──gRPC──▶ Master ──K8s Exec──▶ Worker
+Coordinator ──HTTP/2+JSON──▶ Master ──K8s Exec──▶ Worker
      ▲                  │
      │                  │
      └──────────────────┘
@@ -82,11 +82,11 @@ Coordinator ──gRPC──▶ Master ──K8s Exec──▶ Worker
 | Python variables | Coordinator memory | Pipeline execution | Ephemeral |
 | Shell variables | Worker process | Single command | Does NOT persist |
 | Environment variables | Passed via `env={}` | Per-step | Per-command |
-| Captured output | gRPC response | Per-step | Returned to Coordinator |
+| Captured output | HTTP/2 JSON response | Per-step | Returned to Coordinator |
 
 ### Shell Execution Model: Stateless
 
-**Each `step.run()` spawns a fresh `/bin/sh -c` process.**
+**Each `step.run()` spawns a fresh `/bin/sh -c` process. Commands are escaped with `shlex` before execution.**
 
 ```python
 # ❌ WRONG: cd does not persist
@@ -130,7 +130,7 @@ Secrets are NOT injected as environment variables. Instead:
 ```python
 from danube import secrets
 
-# Coordinator calls Master via gRPC
+# Coordinator calls Master via HTTP/2 JSON
 api_key = secrets.get("API_KEY")
 
 # Use in commands
@@ -199,11 +199,14 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 
 ## Timeouts
 
-Configured per-pipeline in CaC YAML:
+Configured per-pipeline in Blueprint JSON:
 
-```yaml
-spec:
-  max_duration_seconds: 3600  # 1 hour
+```json
+{
+  "spec": {
+    "max_duration_seconds": 3600
+  }
+}
 ```
 
 Master monitors job duration. If exceeded:
@@ -234,7 +237,7 @@ else:
 
 ### Network Failures
 
-If Master ↔ Coordinator gRPC connection breaks:
+If Master ↔ Coordinator HTTP/2 connection breaks:
 - Coordinator retries for 30 seconds
 - If still failing, Coordinator exits with error
 - Master marks job as `failure`

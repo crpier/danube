@@ -11,8 +11,8 @@
 **Log Levels**:
 - `ERROR`: Unrecoverable errors (database connection lost, K8s API unreachable)
 - `WARNING`: Recoverable issues (failed secret access, webhook validation failed)
-- `INFO`: Notable events (job started, pipeline triggered, CaC sync completed)
-- `DEBUG`: Detailed diagnostics (gRPC calls, SQL queries)
+- `INFO`: Notable events (job started, pipeline triggered, Blueprint sync completed)
+- `DEBUG`: Detailed diagnostics (HTTP/2 RPC calls, SQL queries)
 - `TRACE`: Very verbose (not used by default)
 
 **Configuration**: Set via environment variable:
@@ -41,9 +41,9 @@ export DANUBE_LOG_LEVEL=INFO  # Default
 
 **Storage**: `/var/lib/danube/logs/<job_id>.log`
 
-**Write pattern**: Append-only during job execution
+**Write pattern**: Append-only during job execution (batched flushes)
 
-**Streaming**: Master reads file and streams to SSE clients in real-time
+**Streaming**: Master reads file and streams to SSE clients in real-time; backpressure blocks log ingestion when disk is saturated
 
 **Retention**: Deleted by Reaper after `retention.logs_days`
 
@@ -66,14 +66,21 @@ Master exports metrics via:
 - **OTLP exporter**: Pushes to configured collector (optional)
 
 **Configuration**:
-```yaml
-# config.yaml in CaC repo
-spec:
-  observability:
-    otel_endpoint: "http://otel-collector:4317"
-    metrics_enabled: true
-    traces_enabled: true
+```json
+{
+  "apiVersion": "danube.dev/v1",
+  "kind": "Config",
+  "metadata": {"name": "global"},
+  "spec": {
+    "observability": {
+      "otel_endpoint": "http://otel-collector:4317",
+      "metrics_enabled": true,
+      "traces_enabled": true
+    }
+  }
+}
 ```
+
 
 ### Key Metrics
 
@@ -115,12 +122,12 @@ danube_sse_clients_active  # Gauge
 danube_sse_messages_sent_total
 ```
 
-**CaC Sync**:
+**Blueprint Sync**:
 ```
-danube_cac_sync_total{status="success|error"}
-danube_cac_sync_last_success  # Unix timestamp
-danube_cac_sync_duration_seconds  # Histogram
-danube_cac_changes_applied_total{type="pipeline|user|team"}
+danube_blueprint_sync_total{status="success|error"}
+danube_blueprint_sync_last_success  # Unix timestamp
+danube_blueprint_sync_duration_seconds  # Histogram
+danube_blueprint_changes_applied_total{type="pipeline|user|team"}
 ```
 
 **Registry**:
@@ -162,7 +169,7 @@ Recommended dashboard panels:
    - Active jobs
 
 2. **Performance**:
-   - gRPC request rate
+   - HTTP/2 RPC request rate
    - K8s API latency
    - Database query duration (p50, p95, p99)
    - Log streaming throughput
@@ -171,7 +178,7 @@ Recommended dashboard panels:
    - Failed jobs by pipeline
    - K8s API errors
    - Database lock waits
-   - CaC sync failures
+   - Blueprint sync failures
 
 4. **Capacity**:
    - Active pods
@@ -200,15 +207,15 @@ Span: Job abc123
 ├─ Span: Create Pod
 ├─ Span: Wait for Pod ready
 ├─ Span: Execute step 1
-│  ├─ Span: gRPC RunStep
+│  ├─ Span: HTTP/2 RunStep
 │  └─ Span: K8s Exec API
 ├─ Span: Execute step 2
 └─ Span: Delete Pod
 ```
 
-**gRPC Calls**:
+**HTTP/2 RPC Calls**:
 ```
-Span: gRPC JobService.RunStep
+Span: POST /rpc/run-step
 ├─ Span: Validate job_id
 ├─ Span: Load secret (if needed)
 ├─ Span: K8s Exec
@@ -218,7 +225,7 @@ Span: gRPC JobService.RunStep
 ### Trace Context Propagation
 
 - HTTP requests: `traceparent` header
-- gRPC calls: OpenTelemetry metadata
+- HTTP/2 RPC calls: OpenTelemetry metadata
 - Job logs: Trace ID injected into structured logs
 
 ### Jaeger Integration
@@ -261,7 +268,7 @@ Returns 200 if all subsystems healthy (readiness probe).
     "k8s": "ok",
     "dex": "ok",
     "registry": "ok",
-    "cac_sync": "ok"
+    "blueprint_sync": "ok"
   },
   "timestamp": "2026-01-10T12:34:56Z"
 }
@@ -277,7 +284,7 @@ Returns 503 if any check fails:
     "k8s": "ok",
     "dex": "degraded",  # Dex pod not running
     "registry": "ok",
-    "cac_sync": "stale"  # Last sync >5min ago
+    "blueprint_sync": "stale"  # Last sync >5min ago
   },
   "timestamp": "2026-01-10T12:34:56Z"
 }
@@ -309,11 +316,11 @@ Master runs background task every 5 minutes:
 2. Check K8s API (`GET /api/v1/namespaces/danube-system`)
 3. Check Dex pod status
 4. Check Registry pod status
-5. Check CaC sync freshness (last sync <5min ago)
+5. Check Blueprint sync freshness (last sync <5min ago)
 
 If checks fail, attempt self-healing:
 - Restart failed Dex/Registry pods
-- Force CaC sync
+- Force Blueprint sync
 - Clear stale database locks
 - Log health check results
 
@@ -333,7 +340,7 @@ Alert on repeated failures (integrate with monitoring system).
 
 - Dex pod restart
 - Registry pod restart
-- CaC sync stale (>10min)
+- Blueprint sync stale (>10min)
 - Job timeout rate >10%
 - High database lock contention
 - SSE client connection failures

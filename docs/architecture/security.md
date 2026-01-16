@@ -5,28 +5,28 @@
 | Threat | Mitigation |
 |--------|------------|
 | Malicious pipeline code escapes container | K3s containerd with seccomp/AppArmor, pods run as non-root |
-| Secret exfiltration via logs | SecretService gRPC access only, log scrubbing for patterns |
+| Secret exfiltration via logs | SecretService HTTP/2 access only, log scrubbing for patterns |
 | Unauthorized API access | Dex OIDC authentication required, team-based RBAC |
 | Tampered build artifacts | SLSA provenance with Ed25519 signatures |
 | Coordinator → Worker spoofing | All commands route through Master, Workers cannot initiate connections |
 | Supply chain attacks via dependencies | Cilium NetworkPolicy restricts egress to allowlist |
-| Configuration tampering | CaC repo is source of truth, Git commit history provides audit trail |
+| Configuration tampering | Blueprint repo is source of truth, Git commit history provides audit trail |
 | Encryption key compromise | File permissions 0600, recommend hardware security module for production |
 
 ## Secrets Management
 
 ### Architecture: SecretService
 
-**NOT using environment variables.** Secrets accessed via gRPC:
+**NOT using environment variables.** Secrets accessed via HTTP/2 JSON:
 
 ```
 1. Secrets stored in SQLite encrypted with AES-256-GCM
 2. Encryption key in /var/lib/danube/keys/encryption.key (0600)
 3. Job starts → Master loads pipeline secrets into SecretService cache
-4. Coordinator requests: GetSecret(job_id, key) → value
+4. Coordinator requests: GetSecret(job_id, key) → value (HTTP/2 JSON)
 5. Master validates job_id active and has access
 6. Secret returned to Coordinator
-7. Secrets never in logs, Pod env vars, or YAML manifests
+7. Secrets never in logs, Pod env vars, or JSON manifests
 8. Cache cleared when job completes
 ```
 
@@ -62,7 +62,7 @@ CREATE TABLE secrets (
 
 ### Secret Rotation
 
-Secrets can be updated in CaC repo or via API. Master re-encrypts with current key:
+Secrets can be updated in Blueprint repo or via API. Master re-encrypts with current key:
 
 ```bash
 # Add/update secret
@@ -139,7 +139,7 @@ danube provenance verify --job=abc123 --public-key=/var/lib/danube/keys/signing.
 2. FastAPI checks for JWT in cookie/header
 3. No JWT → redirect to Dex login page
 4. Dex shows login form (username/password)
-5. Dex validates against users.yaml from CaC repo
+5. Dex validates against users.json from Blueprint repo
 6. Dex issues JWT with claims: sub, email, name
 7. Redirect back to Danube with JWT
 8. Danube validates JWT signature
@@ -170,13 +170,13 @@ danube provenance verify --job=abc123 --public-key=/var/lib/danube/keys/signing.
 | Cancel job | `write` |
 | View logs | `read` |
 | Download artifacts | `read` |
-| Modify pipeline config (via CaC PR) | N/A (Git-based) |
+| Modify pipeline config (via Blueprint PR) | N/A (Git-based) |
 | Manage secrets | `admin` |
-| Delete pipeline (via CaC) | `admin` |
+| Delete pipeline (via Blueprint) | `admin` |
 
 **Global Admins**:
 
-Teams with `global_admin: true` in CaC have full access to all pipelines.
+Teams with `global_admin: true` in Blueprint have full access to all pipelines.
 
 **Example Permission Check**:
 ```python
@@ -225,7 +225,7 @@ Applied to `danube-jobs` namespace:
 - Future: Built-in TLS with Let's Encrypt
 
 **Internal**:
-- gRPC between Coordinator and Master: plaintext (same pod network namespace, not exposed)
+- HTTP/2 JSON between Coordinator and Master: plaintext (same pod network namespace, not exposed)
 - K8s API: TLS (handled by kubernetes client library)
 
 ## Container Security
@@ -271,7 +271,7 @@ All security-relevant events logged to Master logs:
 - Permission denied events
 - Secret access
 - Pipeline trigger (who, what, when)
-- Configuration changes (from CaC sync)
+- Configuration changes (from Blueprint sync)
 - Job cancellations
 
 **Log format**: Structured JSON with fields:
@@ -297,7 +297,7 @@ All security-relevant events logged to Master logs:
 4. **Backups**: Encrypt backups of `/var/lib/danube/keys/`
 5. **Monitoring**: Alert on failed login attempts, permission denied events
 6. **Updates**: Subscribe to security advisories, apply patches promptly
-7. **CaC Repo**: Require signed commits, enforce branch protection
+7. **Blueprint Repo**: Require signed commits, enforce branch protection
 8. **Image Registry**: Use private registry with scanning, don't pull untrusted images
 
 ### Secret Management Best Practices
@@ -306,4 +306,4 @@ All security-relevant events logged to Master logs:
 2. **Scope**: Use pipeline-specific secrets, not global where possible
 3. **Principle of Least Privilege**: Grant access only to pipelines that need it
 4. **Audit**: Review secret access logs periodically
-5. **Storage**: Never commit secrets to Git; use CaC only for configuration structure
+5. **Storage**: Never commit secrets to Git; use Blueprint only for configuration structure

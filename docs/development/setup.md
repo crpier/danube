@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.14+
 - [UV](https://github.com/astral-sh/uv) package manager
 - Git
 - Docker or K3s (for integration testing)
@@ -47,9 +47,9 @@ danube/
 ├── danube/
 │   ├── __init__.py
 │   ├── master.py           # Master process entry point
-│   ├── api/                # FastAPI HTTP/gRPC servers
+│   ├── api/                # FastAPI HTTP/HTTP2 servers
 │   │   ├── http.py
-│   │   └── grpc.py
+│   │   └── rpc.py
 │   ├── orchestrator/       # Job orchestration
 │   │   ├── scheduler.py
 │   │   └── state_machine.py
@@ -58,10 +58,9 @@ danube/
 │   │   ├── pod_builder.py
 │   │   └── exec.py
 │   ├── db/                 # Database layer
-│   │   ├── models.py
-│   │   ├── repos.py
+│   │   ├── queries.py
 │   │   └── migrations/
-│   ├── cac/                # Configuration as Code
+│   ├── blueprint/          # Blueprint (GitOps)
 │   │   ├── syncer.py
 │   │   └── parser.py
 │   ├── security/           # Secrets and auth
@@ -69,8 +68,8 @@ danube/
 │   │   └── auth.py
 │   └── sdk/                # Coordinator Python SDK
 │       └── coordinator.py
-├── proto/                  # gRPC protocol definitions
-│   └── danube.proto
+├── protocol/               # HTTP/2 JSON protocol definitions
+│   └── rpc-schema.json
 ├── frontend/               # SolidJS UI
 │   ├── src/
 │   └── package.json
@@ -96,7 +95,7 @@ bind_address = "127.0.0.1:8080"
 data_dir = "./data"
 
 [config_repo]
-url = "file:///tmp/danube-config-test"
+url = "file:///tmp/danube-blueprint-test"
 branch = "main"
 sync_interval = "10s"
 
@@ -106,54 +105,63 @@ format = "text"
 EOF
 ```
 
-### 2. Create Test CaC Repository
+### 2. Create Test Blueprint Repository
 
 ```bash
 # Create local Git repo for testing
-mkdir -p /tmp/danube-config-test
-cd /tmp/danube-config-test
+mkdir -p /tmp/danube-blueprint-test
+cd /tmp/danube-blueprint-test
 git init
 
 # Create minimal config
-cat > config.yaml <<EOF
-apiVersion: danube.dev/v1
-kind: Config
-metadata:
-  name: global
-spec:
-  retention:
-    logs_days: 7
-    artifacts_days: 7
-    registry_images_days: 7
-  egress_allowlist:
-    - "registry.npmjs.org"
+cat > config.json <<EOF
+{
+  "apiVersion": "danube.dev/v1",
+  "kind": "Config",
+  "metadata": {"name": "global"},
+  "spec": {
+    "retention": {
+      "logs_days": 7,
+      "artifacts_days": 7,
+      "registry_images_days": 7
+    },
+    "egress_allowlist": ["registry.npmjs.org"]
+  }
+}
 EOF
 
-cat > users.yaml <<EOF
-apiVersion: danube.dev/v1
-kind: User
-metadata:
-  name: dev
-spec:
-  email: dev@localhost
-  password_hash: "\$2b\$12\$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5NU2FcbZqd7rO"  # "password"
+cat > users.json <<EOF
+[
+  {
+    "apiVersion": "danube.dev/v1",
+    "kind": "User",
+    "metadata": {"name": "dev"},
+    "spec": {
+      "email": "dev@localhost",
+      "password_hash": "\$2b\$12\$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5NU2FcbZqd7rO"
+    }
+  }
+]
 EOF
 
-cat > teams.yaml <<EOF
-apiVersion: danube.dev/v1
-kind: Team
-metadata:
-  name: dev-team
-spec:
-  members:
-    - dev@localhost
-  global_admin: true
+cat > teams.json <<EOF
+[
+  {
+    "apiVersion": "danube.dev/v1",
+    "kind": "Team",
+    "metadata": {"name": "dev-team"},
+    "spec": {
+      "members": ["dev@localhost"],
+      "global_admin": true
+    }
+  }
+]
 EOF
 
 mkdir pipelines
 
 git add .
-git commit -m "Initial test config"
+git commit -m "Initial test blueprint"
 
 cd -
 ```
@@ -224,7 +232,7 @@ uv run pyright danube/master.py
 ```toml
 [tool.pyright]
 typeCheckingMode = "strict"
-pythonVersion = "3.11"
+pythonVersion = "3.14"
 include = ["danube"]
 exclude = ["**/node_modules", "**/__pycache__", "tests"]
 ```
@@ -278,8 +286,8 @@ uv run snektest tests/unit/test_orchestrator.py::test_job_creation
 ### Create Migration
 
 ```bash
-# Auto-generate migration after model changes
-uv run alembic revision --autogenerate -m "Add new column"
+# Create migration with manual SQL
+uv run alembic revision -m "Add new column"
 
 # Edit migration file in danube/db/migrations/versions/
 ```
@@ -312,35 +320,20 @@ rm ./data/danube.db
 uv run alembic upgrade head
 ```
 
-## gRPC Development
+## HTTP/2 JSON Development
 
-### Generate Python Code from Proto
-
-```bash
-# Install grpcio-tools
-uv add --dev grpcio-tools
-
-# Generate Python code
-python -m grpc_tools.protoc \
-  -I./proto \
-  --python_out=./danube/api \
-  --grpc_python_out=./danube/api \
-  ./proto/danube.proto
-```
-
-### Test gRPC Calls
+### Example RPC Requests
 
 ```bash
-# Install grpcurl
-brew install grpcurl  # macOS
-# or download from https://github.com/fullstorydev/grpcurl
+# RunStep
+curl --http2-prior-knowledge -X POST http://localhost:9000/rpc/run-step \
+  -H "Content-Type: application/json" \
+  -d '{"job_id":"abc123","command":"npm ci"}'
 
-# List services
-grpcurl -plaintext localhost:9000 list
-
-# Call method
-grpcurl -plaintext -d '{"job_id": "abc123", "key": "API_KEY"}' \
-  localhost:9000 danube.JobService/GetSecret
+# GetSecret
+curl --http2-prior-knowledge -X POST http://localhost:9000/rpc/get-secret \
+  -H "Content-Type: application/json" \
+  -d '{"job_id":"abc123","key":"API_KEY"}'
 ```
 
 ## Frontend Development
@@ -439,19 +432,20 @@ logger.info("Job started", extra={
 
 ### Add New Database Table
 
-1. Add SQLAlchemy model in `danube/db/models.py`
-2. Create migration: `uv run alembic revision --autogenerate -m "Add table"`
-3. Review and edit migration file
-4. Apply migration: `uv run alembic upgrade head`
-5. Add repository methods in `danube/db/repos.py`
-6. Add tests
+1. Add SQL in `danube/db/queries.py`
+2. Update migrations (manual SQL) in `danube/db/migrations/`
+3. Apply migration: `uv run alembic upgrade head`
+4. Add repository methods in `danube/db/queries.py`
+5. Add tests
 
 ### Add New Configuration Option
 
-1. Update CaC schema in `danube/cac/models.py`
-2. Update parser in `danube/cac/parser.py`
-3. Use in relevant component
-4. Update documentation in `docs/configuration/cac-reference.md`
+1. Update Blueprint schema in `danube/blueprint/schema.json`
+2. Update parser in `danube/blueprint/parser.py`
+3. Update validation logic
+4. Update documentation in `docs/configuration/cac-reference.md` (Blueprint JSON examples).
+5. Refresh JSON Schema if needed
+
 5. Add validation tests
 
 ## Troubleshooting

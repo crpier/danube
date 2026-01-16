@@ -2,7 +2,7 @@
 
 ## Overview
 
-Danube requires minimal server configuration. Most settings are managed via the Configuration as Code (CaC) repository.
+Danube requires minimal server configuration. Most settings are managed via the Blueprint (GitOps) repository.
 
 ## Configuration File
 
@@ -16,7 +16,7 @@ This is the ONLY required configuration:
 
 ```toml
 [config_repo]
-url = "git@github.com:myorg/danube-config.git"
+url = "git@github.com:myorg/danube-blueprint.git"
 branch = "main"
 sync_interval = "60s"
 ```
@@ -27,14 +27,14 @@ sync_interval = "60s"
 # Server settings
 [server]
 bind_address = "0.0.0.0:8080"  # HTTP API listen address
-grpc_address = "0.0.0.0:9000"  # gRPC listen address
+rpc_address = "0.0.0.0:9000"   # HTTP/2 control plane address
 data_dir = "/var/lib/danube"   # Data directory path
 
-# Configuration as Code repository
+# Blueprint (GitOps) repository
 [config_repo]
-url = "git@github.com:myorg/danube-config.git"  # Git URL (SSH or HTTPS)
-branch = "main"                                  # Branch to track
-sync_interval = "60s"                            # Poll interval (e.g., "30s", "5m")
+url = "git@github.com:myorg/danube-blueprint.git"  # Git URL (SSH or HTTPS)
+branch = "main"                                     # Branch to track
+sync_interval = "60s"                               # Poll interval (e.g., "30s", "5m")
 ssh_key_path = "/var/lib/danube/keys/git_deploy_key"  # SSH key for private repos
 
 # Kubernetes
@@ -70,7 +70,7 @@ export DANUBE_BIND_ADDRESS="0.0.0.0:8080"
 export DANUBE_DATA_DIR="/var/lib/danube"
 
 # Config repo
-export DANUBE_CONFIG_REPO_URL="git@github.com:myorg/danube-config.git"
+export DANUBE_CONFIG_REPO_URL="git@github.com:myorg/danube-blueprint.git"
 export DANUBE_CONFIG_REPO_BRANCH="main"
 
 # Logging
@@ -100,13 +100,13 @@ Master validates configuration on startup:
 
 If validation fails, Master exits with error.
 
-## CaC Repository Authentication
+## Blueprint Repository Authentication
 
 ### SSH Key (Recommended)
 
 ```toml
 [config_repo]
-url = "git@github.com:myorg/danube-config.git"
+url = "git@github.com:myorg/danube-blueprint.git"
 ssh_key_path = "/var/lib/danube/keys/git_deploy_key"
 ```
 
@@ -119,7 +119,7 @@ ssh_key_path = "/var/lib/danube/keys/git_deploy_key"
 
 ```toml
 [config_repo]
-url = "https://oauth2:YOUR_TOKEN@github.com/myorg/danube-config.git"
+url = "https://oauth2:YOUR_TOKEN@github.com/myorg/danube-blueprint.git"
 ```
 
 **Not recommended**: Token visible in config file and process list.
@@ -137,13 +137,13 @@ echo "https://user:token@github.com" > ~/.git-credentials
 ### Security
 
 - Store config file with restricted permissions: `chmod 600 /etc/danube/danube.toml`
-- Use SSH key authentication for CaC repo
+- Use SSH key authentication for Blueprint repo
 - Rotate SSH keys periodically
-- Never commit secrets to config file (use CaC repo for secret references only)
+- Never commit secrets to config file (use Blueprint repo for secret references only)
 
 ### Performance
 
-- Increase `sync_interval` for large CaC repos: `"5m"` instead of `"60s"`
+- Increase `sync_interval` for large Blueprint repos: `"5m"` instead of `"60s"`
 - Use SSD storage for `data_dir`
 - Co-locate Master and K8s API server on same network for low latency
 
@@ -165,7 +165,7 @@ kill -HUP $(pgrep -f "danube master")
 Master reloads:
 - Logging configuration
 - Observability settings
-- CaC repo settings (triggers immediate sync)
+- Blueprint repo settings (triggers immediate sync)
 
 **Not reloaded** (requires restart):
 - Server bind addresses
