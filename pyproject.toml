@@ -1,0 +1,23 @@
+[project]
+name = "danube"
+version = "0.1.0"
+description = "Self-hosted CI/CD platform"
+requires-python = ">=3.14"
+dependencies = [
+    "kr8s>=0.20.15",
+    "snektest>=0.3.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-dir]
+"" = "backend"
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+include = ["danube*"]
+
+[tool.snektest]
+pythonpath = ["backend"]

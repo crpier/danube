@@ -92,9 +92,9 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 **Technology**: kubernetes (official Python client)
 
 **Operations**:
-- Pod creation and deletion
-- Exec API for running commands in Worker container
-- Log streaming from containers
+- Pod creation and deletion (implemented)
+- Exec API for running commands in Worker container (planned)
+- Log streaming from containers (planned)
 - Service and deployment management (for Dex, Registry)
 
 ### Log Writer

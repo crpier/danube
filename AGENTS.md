@@ -26,3 +26,8 @@ Tickets are named `DAN-<number>`.
 - Follow the architecture docs before implementing new components.
 - Each ticket includes testing and documentation expectations; handle them within the ticket scope.
 - If the architecture of the application changes during implementation, update the docs accordingly.
+  - If you implement something that is already in the architecture docs, you don't need to say you implemented it. Only the tickets need to be updated.
+
+## Python style
+- `__init__.py` files should be empty.
+- Use modern Python syntax and features, compatible with Python 3.14+.

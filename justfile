@@ -15,3 +15,10 @@ frontend-dev:
 # Infra tasks
 infra-lint:
   echo "Infra linting not configured yet"
+
+clean:
+  rm -rf **/__pycache__
+  rm -rf .ruff_cache
+  rm -rf **/*.egg-info
+  rm -rf build
+  rm -rf dist
