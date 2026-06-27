@@ -226,23 +226,30 @@ built by applying an ordered set of migrations, then verified against the
 models.
 
 ```python
-from snekql.sqlite import Database, scaffold
+from snekql.sqlite import Database
 
 async with await Database.initialize(sqlite.Config(database=db_path)) as db:
     # Migrations are an ordered dict[str, str] of name -> raw SQL body, each
     # applied exactly once and recorded in snekql's Migration History. A fresh
-    # database is built by replaying the whole chain. `scaffold([...])` emits the
-    # initial CREATE TABLE DDL from the models so it is not hand-written.
-    await db.migrate(
-        {
-            "0001_init": scaffold([User, Team, Pipeline, Job, Step, ...]),
-            # "0002_...": 'ALTER TABLE "job" ADD COLUMN ...',
-        },
-    )
+    # database is built by replaying the whole chain.
+    #
+    # GOTCHA: each migration body runs exactly ONE statement (snekql calls
+    # `connection.execute` per body). A multi-statement `scaffold([...])` blob
+    # passed as a single body silently runs only its first statement. So the
+    # chain is a literal, one-statement-per-entry `dict[str, str]` (one CREATE
+    # TABLE or CREATE INDEX each) rather than a single scaffolded body.
+    #
+    # `scaffold([...])` is still the source of the SQL: its output is split on
+    # `;` and each statement becomes its own append-only entry. Migrations are
+    # immutable once written — never edit or rename an applied one; append a new
+    # entry for any change.
+    await db.migrate(MIGRATIONS)  # danube.db.migrations.MIGRATIONS
     # Structural check between models and the live schema; raises on drift.
-    await db.verify([User, Team, Pipeline, Job, Step, ...], policy="strict")
+    await db.verify(MODELS, policy="strict")  # danube.db.models.MODELS
 ```
 
+- The danube entrypoint is `danube.db.open_database(path)`, which runs
+  `initialize -> migrate -> verify(policy="strict")`.
 - Migration deploys run `initialize -> migrate -> verify`.
 - Read-only replicas / app startup that assumes an already-migrated schema run
   `initialize -> verify`.
