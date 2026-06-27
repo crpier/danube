@@ -2,496 +2,202 @@
 
 ## Testing Framework
 
-Danube uses [snektest](https://pypi.org/project/snektest/) as the primary testing framework.
+Danube uses `snektest` as the primary Python testing framework.
 
 ## Test Structure
 
-```
+```text
 tests/
-├── unit/                   # Unit tests (no external dependencies)
+├── unit/
 │   ├── test_orchestrator.py
-│   ├── test_k8s_client.py
+│   ├── test_runner.py
 │   ├── test_secrets.py
 │   └── ...
-├── integration/            # Integration tests (with K8s, DB)
+├── integration/
 │   ├── test_job_execution.py
 │   ├── test_blueprint_sync.py
+│   ├── test_local_runner.py
 │   └── ...
-├── e2e/                    # End-to-end tests (full system)
-│   ├── test_pipeline_flow.py
-│   └── ...
-├── fixtures/               # Shared test fixtures
-│   ├── k8s_fixtures.py
-│   ├── db_fixtures.py
-│   └── ...
-└── conftest.py             # snektest configuration
+├── e2e/
+│   └── test_pipeline_flow.py
+├── fixtures/
+└── conftest.py
 ```
 
 ## Running Tests
 
-### All Tests
-
 ```bash
-# Run all tests
 uv run snektest
-
-# With verbose output
 uv run snektest -v
-
-# With coverage
-uv run snektest --cov=danube --cov-report=html
-open htmlcov/index.html
-```
-
-### Specific Test Categories
-
-```bash
-# Unit tests only
 uv run snektest tests/unit/
-
-# Integration tests only
 uv run snektest tests/integration/
-
-# E2E tests only
 uv run snektest tests/e2e/
 ```
 
-### Specific Test Files
+Specific file/test:
 
 ```bash
-# Run specific file
-uv run snektest tests/unit/test_orchestrator.py
-
-# Run specific test
-uv run snektest tests/unit/test_orchestrator.py::test_job_creation
-
-# Run tests matching pattern
-uv run snektest -k "test_job"
+uv run snektest tests/unit/test_runner.py
+uv run snektest tests/unit/test_runner.py::test_exec_step_streams_logs
 ```
 
-## Writing Unit Tests
+## Unit Tests
 
-### Basic Test Structure
+Unit tests should not require real Podman access, network access, or external services.
+
+Example:
 
 ```python
+from unittest.mock import AsyncMock
+
 from danube.orchestrator import JobOrchestrator
-from danube.db.models import Job, Pipeline
+from danube.runner import Runner
 
-async def test_job_creation():
-    """Test that jobs are created with correct initial state."""
-    orchestrator = JobOrchestrator()
-    
-    pipeline = Pipeline(id="test-pipeline", name="Test")
+async def test_job_creation_starts_in_pending_state():
+    runner = AsyncMock(spec=Runner)
+    orchestrator = JobOrchestrator(runner=runner)
+
     job = await orchestrator.create_job(
-        pipeline=pipeline,
-        trigger_type="manual"
+        pipeline_id="frontend-build",
+        trigger_type="manual",
     )
-    
-    assert job.status == "pending"
-    assert job.pipeline_id == "test-pipeline"
-    assert job.trigger_type == "manual"
 
-async def test_job_timeout():
-    """Test that jobs timeout after max_duration."""
-    orchestrator = JobOrchestrator()
-    
-    job = Job(id="test-job", max_duration_seconds=1)
-    await orchestrator.start_job(job)
-    
-    # Wait for timeout
-    await asyncio.sleep(2)
-    
-    updated_job = await orchestrator.get_job(job.id)
-    assert updated_job.status == "timeout"
+    assert job.status == "pending"
 ```
 
-### Mocking External Dependencies
+## Runner Tests
+
+Runner unit tests should mock the Podman adapter:
 
 ```python
-from unittest.mock import AsyncMock, MagicMock
-from danube.k8s.client import K8sClient
+async def test_runner_starts_containers(podman_adapter):
+    runner = LocalContainerRunner(runtime=podman_adapter)
 
-async def test_pod_creation():
-    """Test pod creation without real K8s cluster."""
-    # Mock K8s client
-    k8s_client = AsyncMock(spec=K8sClient)
-    k8s_client.create_pod.return_value = {"name": "test-pod"}
-    
-    orchestrator = JobOrchestrator(k8s_client=k8s_client)
-    pod = await orchestrator.create_pod(job_id="test-job")
-    
-    # Verify mock was called correctly
-    k8s_client.create_pod.assert_called_once()
-    assert pod["name"] == "test-pod"
+    await runner.start_job(job_id="job-1", worker_image="busybox")
+
+    podman_adapter.create_container.assert_called()
 ```
 
-### Testing Database Operations
+Integration tests may use real rootless Podman:
+
+```python
+async def test_local_runner_execs_command(local_runner):
+    job = await local_runner.start_job(
+        job_id="test-job",
+        worker_image="busybox",
+    )
+
+    result = await local_runner.exec_step(job, "echo hello")
+
+    assert result.exit_code == 0
+    assert "hello" in result.stdout
+
+    await local_runner.cleanup(job)
+```
+
+Runtime integration tests should skip when rootless Podman or the Podman API socket is unavailable.
+
+## Database Tests
+
+Use in-memory SQLite for unit tests:
 
 ```python
 import aiosqlite
-from danube.db.queries import JobQueries
 
-async def test_job_repository():
-    """Test job queries with in-memory SQLite."""
+async def test_job_queries(schema_sql):
     async with aiosqlite.connect(":memory:") as db:
-        await db.executescript(SCHEMA_SQL)
-
-        queries = JobQueries(db)
-
-        job = await queries.create_job(
-            pipeline_id="test-pipeline",
-            trigger_type="manual"
-        )
+        await db.executescript(schema_sql)
+        # run query tests
 ```
 
+## Blueprint Sync Tests
 
-### Property-Based Testing
-
-```python
-from hypothesis import given, strategies as st
-
-@given(
-    job_id=st.text(min_size=1, max_size=50),
-    status=st.sampled_from(["pending", "running", "success", "failure"])
-)
-async def test_job_status_updates(job_id: str, status: str):
-    """Test job status updates with generated inputs."""
-    repo = JobRepository(session)
-    
-    job = await repo.create(pipeline_id="test", trigger_type="manual")
-    updated = await repo.update_status(job.id, status)
-    
-    assert updated.status == status
-```
-
-## Writing Integration Tests
-
-### K8s Integration Tests
-
-```python
-from kubernetes import config, client
-from danube.k8s.client import K8sClient
-
-async def test_pod_lifecycle():
-    """Test full pod lifecycle with real K8s cluster."""
-    # Load kubeconfig
-    config.load_kube_config()
-    
-    k8s_client = K8sClient()
-    
-    # Create pod
-    pod = await k8s_client.create_pod(
-        name="test-pod",
-        namespace="danube-jobs",
-        image="busybox",
-        command=["/bin/sh", "-c", "echo hello"]
-    )
-    
-    assert pod.metadata.name == "test-pod"
-    
-    # Wait for pod to complete
-    await k8s_client.wait_for_pod_complete(pod.metadata.name, timeout=30)
-    
-    # Get logs
-    logs = await k8s_client.get_pod_logs(pod.metadata.name)
-    assert "hello" in logs
-    
-    # Delete pod
-    await k8s_client.delete_pod(pod.metadata.name)
-```
-
-### Blueprint Sync Integration Tests
+Use temporary Git repositories:
 
 ```python
 import tempfile
-import git
-from danube.blueprint.syncer import BlueprintSyncer
+from pathlib import Path
 
-async def test_blueprint_sync():
-    """Test Blueprint repository sync."""
-    # Create temporary Git repo
+async def test_blueprint_sync(syncer_factory):
     with tempfile.TemporaryDirectory() as tmpdir:
-        repo = git.Repo.init(tmpdir)
-
-        # Create config file
-        config_file = Path(tmpdir) / "config.json"
-        config_file.write_text("""
-{
-  \"apiVersion\": \"danube.dev/v1\",
-  \"kind\": \"Config\",
-  \"metadata\": {\"name\": \"global\"},
-  \"spec\": {\"retention\": {\"logs_days\": 30}}
-}
-""")
-
-        repo.index.add(["config.json"])
-        repo.index.commit("Initial config")
-
-        # Sync
-        syncer = BlueprintSyncer(repo_url=f"file://{tmpdir}")
+        path = Path(tmpdir)
+        # create Git repo and JSON files
+        syncer = syncer_factory(repo_url=f"file://{path}")
         await syncer.sync()
-
-        # Verify config loaded
-        config = await syncer.get_config()
-        assert config.spec.retention.logs_days == 30
 ```
 
-## Writing E2E Tests
+## E2E Tests
 
-### Full Pipeline Execution
+E2E tests cover full flow:
+
+1. Blueprint config loaded
+2. Pipeline triggered
+3. Job environment created
+4. Coordinator runs `danubefile.py`
+5. Worker executes command
+6. Logs stream
+7. Artifacts upload
+8. Job cleans up
+
+Example expectation:
 
 ```python
-async def test_full_pipeline_execution():
-    """Test complete pipeline from trigger to completion."""
-    # Create test pipeline in Blueprint repo
-    pipeline_config = """
-{
-  \"apiVersion\": \"danube.dev/v1\",
-  \"kind\": \"Pipeline\",
-  \"metadata\": {\"name\": \"test-pipeline\"},
-  \"spec\": {
-    \"repository\": \"https://github.com/test/repo\",
-    \"script\": \"danubefile.py\"
-  }
-}
-"""
-    
-    # Trigger webhook
-    response = await http_client.post(
+async def test_full_pipeline_execution(api_client):
+    response = await api_client.post(
         "/webhooks/github",
-        json={
-            "repository": {"full_name": "test/repo"},
-            "ref": "refs/heads/main",
-            "after": "abc123"
-        }
+        json={"ref": "refs/heads/main", "after": "abc123"},
     )
-    
+
     assert response.status_code == 200
     job_id = response.json()["job_id"]
-    
-    # Wait for job to complete
-    for _ in range(60):
-        job = await get_job(job_id)
-        if job.status in ["success", "failure"]:
-            break
-        await asyncio.sleep(1)
-    
+
+    job = await wait_for_job(job_id)
     assert job.status == "success"
-    
-    # Verify logs
-    logs = await get_job_logs(job_id)
-    assert "Pipeline completed" in logs
 ```
 
-## Test Fixtures
+## Coverage Targets
 
-### Database Fixtures
-
-```python
-# tests/fixtures/db_fixtures.py
-from snektest import fixture
-import aiosqlite
-
-@fixture
-async def db_connection():
-    """Provide in-memory SQLite connection."""
-    async with aiosqlite.connect(":memory:") as db:
-        await db.executescript(SCHEMA_SQL)
-        yield db
-```
-
-### K8s Fixtures
-
-```python
-# tests/fixtures/k8s_fixtures.py
-from snektest import fixture
-from kubernetes import config, client
-
-@fixture(scope="session")
-def k8s_config():
-    """Load kubeconfig once per session."""
-    config.load_kube_config()
-
-@fixture
-async def k8s_client(k8s_config):
-    """Provide K8s API client."""
-    return client.CoreV1Api()
-
-@fixture
-async def test_namespace(k8s_client):
-    """Create temporary namespace for testing."""
-    namespace = f"danube-test-{uuid.uuid4().hex[:8]}"
-    
-    k8s_client.create_namespace(
-        client.V1Namespace(metadata=client.V1ObjectMeta(name=namespace))
-    )
-    
-    yield namespace
-    
-    k8s_client.delete_namespace(namespace)
-```
-
-## Test Configuration
-
-### conftest.py
-
-```python
-# tests/conftest.py
-from snektest import fixture
-import asyncio
-
-# Configure asyncio event loop
-@fixture(scope="session")
-def event_loop():
-    """Provide event loop for async tests."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-# Mock environment
-@fixture(autouse=True)
-def mock_env(monkeypatch):
-    """Mock environment variables for all tests."""
-    monkeypatch.setenv("DANUBE_LOG_LEVEL", "debug")
-    monkeypatch.setenv("DANUBE_DATA_DIR", "/tmp/danube-test")
-```
-
-## Coverage Requirements
-
-Aim for:
-- **Unit tests**: 90%+ coverage
-- **Integration tests**: Cover critical paths
-- **E2E tests**: Cover main user workflows
-
-### Generate Coverage Report
+- Unit tests: 90%+ for pure logic
+- Integration tests: runner, DB, Blueprint, API critical paths
+- E2E tests: main happy path and one failure path
 
 ```bash
-# Run with coverage
-uv run snektest --cov=danube --cov-report=html --cov-report=term
-
-# View HTML report
-open htmlcov/index.html
-
-# Check coverage threshold
-uv run snektest --cov=danube --cov-fail-under=90
+uv run snektest --cov=danube --cov-report=html --cov-fail-under=90
 ```
 
-## Performance Testing
+## Performance Tests
 
-### Load Testing
+Focus areas:
 
-```python
-import asyncio
-from danube.api.http import app
-
-async def test_api_load():
-    """Test API can handle 100 concurrent requests."""
-    async def make_request():
-        response = await http_client.get("/api/v1/pipelines")
-        assert response.status_code == 200
-    
-    # Run 100 concurrent requests
-    tasks = [make_request() for _ in range(100)]
-    await asyncio.gather(*tasks)
-```
-
-### Benchmark Tests
-
-```python
-import time
-
-async def test_job_creation_performance():
-    """Benchmark job creation speed."""
-    start = time.time()
-    
-    for _ in range(100):
-        await orchestrator.create_job(pipeline_id="test", trigger_type="manual")
-    
-    duration = time.time() - start
-    
-    # Should create 100 jobs in under 1 second
-    assert duration < 1.0
-```
-
-## Continuous Integration
-
-### GitHub Actions
-
-```yaml
-# .github/workflows/test.yml
-name: Tests
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Install UV
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-      
-      - name: Install dependencies
-        run: uv sync
-      
-      - name: Run tests
-        run: uv run snektest --cov=danube --cov-report=xml
-      
-      - name: Upload coverage
-        uses: codecov/codecov-action@v3
-        with:
-          file: ./coverage.xml
-```
+- job creation throughput
+- concurrent log streaming
+- runner exec latency
+- SQLite contention
+- egress proxy overhead
+- cleanup performance after failures
 
 ## Test Best Practices
 
-1. **Isolate tests**: Each test should be independent
-2. **Use descriptive names**: `test_job_timeout_after_max_duration` not `test_timeout`
-3. **Arrange-Act-Assert**: Structure tests clearly
-4. **Mock external services**: Don't rely on real APIs in unit tests
-5. **Clean up resources**: Delete test data, close connections
-6. **Test edge cases**: Empty inputs, very large inputs, concurrent access
-7. **Keep tests fast**: Unit tests should run in milliseconds
-8. **Use fixtures**: Avoid code duplication
-9. **Test error cases**: Not just happy paths
-10. **Update tests with code**: When changing code, update relevant tests
+1. Keep unit tests independent of host runtime.
+2. Put runtime-dependent tests under integration.
+3. Clean up containers, workspaces, and temp files.
+4. Test failure paths: timeout, cancelled job, runtime failure, denied egress.
+5. Use descriptive test names.
+6. Add tests alongside code changes.
+7. Keep fixtures small and explicit.
 
-## Debugging Failing Tests
+## Debugging
 
 ```bash
-# Run with verbose output
-uv run snektest -vv tests/unit/test_orchestrator.py::test_job_creation
-
-# Drop into debugger on failure
+uv run snektest -vv tests/unit/test_runner.py::test_exec_step_streams_logs
 uv run snektest --pdb
-
-# Show print statements
 uv run snektest -s
-
-# Run last failed tests only
-uv run snektest --lf
 ```
 
-## Test Documentation
+For runtime integration tests, inspect local Podman state:
 
-Document complex test setups:
-
-```python
-async def test_concurrent_job_execution():
-    """
-    Test that multiple jobs can run concurrently without interfering.
-    
-    Setup:
-    - Create 3 pipelines with different configurations
-    - Trigger all 3 simultaneously
-    
-    Expected behavior:
-    - All 3 jobs run in parallel
-    - Each job completes successfully
-    - No database contention errors
-    - Logs don't intermix
-    """
-    # Test implementation...
+```bash
+podman pod ps
+podman ps -a
+podman logs <container>
 ```

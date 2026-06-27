@@ -2,7 +2,7 @@
 
 ## Overview
 
-Danube requires minimal server configuration. Most settings are managed via the Blueprint (GitOps) repository.
+Danube requires a small local server configuration file. Most operational configuration is managed through the Blueprint repository.
 
 ## Configuration File
 
@@ -11,8 +11,6 @@ Danube requires minimal server configuration. Most settings are managed via the 
 **Format**: TOML
 
 ## Minimal Configuration
-
-This is the ONLY required configuration:
 
 ```toml
 [config_repo]
@@ -24,85 +22,80 @@ sync_interval = "60s"
 ## Full Configuration Reference
 
 ```toml
-# Server settings
 [server]
-bind_address = "0.0.0.0:8080"  # HTTP API listen address
-rpc_address = "0.0.0.0:9000"   # HTTP/2 control plane address
-data_dir = "/var/lib/danube"   # Data directory path
+bind_address = "0.0.0.0:8080"
+rpc_address = "127.0.0.1:9000"
+data_dir = "/var/lib/danube"
 
-# Blueprint (GitOps) repository
 [config_repo]
-url = "git@github.com:myorg/danube-blueprint.git"  # Git URL (SSH or HTTPS)
-branch = "main"                                     # Branch to track
-sync_interval = "60s"                               # Poll interval (e.g., "30s", "5m")
-ssh_key_path = "/var/lib/danube/keys/git_deploy_key"  # SSH key for private repos
+url = "git@github.com:myorg/danube-blueprint.git"
+branch = "main"
+sync_interval = "60s"
+ssh_key_path = "/var/lib/danube/keys/git_deploy_key"
 
-# Kubernetes
-[kubernetes]
-context = ""                    # K8s context (empty = in-cluster config)
-namespace_system = "danube-system"  # System namespace
-namespace_jobs = "danube-jobs"      # Jobs namespace
+[runner]
+type = "local"
+runtime = "podman"                # initial supported runtime
+coordinator_image = "danube-coordinator:latest"
+max_concurrent_jobs = 4
 
-# Database
+[networking]
+default_deny_egress = true
+egress_proxy_enabled = true
+egress_proxy_address = "127.0.0.1:9080"
+registry_address = "127.0.0.1:5000"
+
 [database]
-path = "/var/lib/danube/danube.db"  # SQLite database file
+path = "/var/lib/danube/danube.db"
 
-# Logging
 [logging]
-level = "info"                  # trace, debug, info, warn, error
-format = "json"                 # json or text
-output = "stdout"               # stdout or file path
+level = "info"
+format = "json"
+output = "stdout"
 
-# Observability (optional)
 [observability]
-otel_endpoint = ""              # OpenTelemetry collector (e.g., "http://localhost:4317")
-metrics_enabled = true          # Enable /metrics endpoint
-traces_enabled = false          # Enable trace export
+otel_endpoint = ""
+metrics_enabled = true
+traces_enabled = false
 ```
 
 ## Environment Variables
 
-Configuration can be overridden via environment variables:
-
 ```bash
-# Server
 export DANUBE_BIND_ADDRESS="0.0.0.0:8080"
+export DANUBE_RPC_ADDRESS="127.0.0.1:9000"
 export DANUBE_DATA_DIR="/var/lib/danube"
-
-# Config repo
 export DANUBE_CONFIG_REPO_URL="git@github.com:myorg/danube-blueprint.git"
 export DANUBE_CONFIG_REPO_BRANCH="main"
-
-# Logging
+export DANUBE_RUNNER_RUNTIME="podman"
 export DANUBE_LOG_LEVEL="debug"
-export DANUBE_LOG_FORMAT="json"
-
-# K8s
-export DANUBE_K8S_NAMESPACE_JOBS="danube-jobs"
 ```
 
-Environment variables take precedence over config file values.
+Environment variables override config file values.
 
 ## Configuration Loading Order
 
-1. Default values (hardcoded)
-2. Config file (`/etc/danube/danube.toml`)
-3. Environment variables (highest priority)
+1. Hardcoded defaults
+2. `/etc/danube/danube.toml`
+3. Environment variables
 
 ## Validation
 
-Master validates configuration on startup:
+On startup, Master validates:
 
-- `config_repo.url` must be valid Git URL
-- `server.data_dir` must exist and be writable
-- `kubernetes.namespace_*` must exist in cluster
-- `sync_interval` must be valid duration (e.g., "30s", "5m")
+- `config_repo.url` is a valid Git URL
+- `server.data_dir` exists and is writable
+- SQLite database path is writable
+- rootless Podman API is available to the `danube` user
+- runner can create/inspect containers
+- egress proxy/firewall settings are compatible
+- `sync_interval` is a valid duration
 
-If validation fails, Master exits with error.
+If validation fails, Master exits with an error.
 
 ## Blueprint Repository Authentication
 
-### SSH Key (Recommended)
+### SSH Key
 
 ```toml
 [config_repo]
@@ -110,64 +103,46 @@ url = "git@github.com:myorg/danube-blueprint.git"
 ssh_key_path = "/var/lib/danube/keys/git_deploy_key"
 ```
 
-**Setup**:
-1. Generate key: `ssh-keygen -t ed25519 -f /var/lib/danube/keys/git_deploy_key -N ''`
-2. Add public key to Git repository deploy keys (read-only)
-3. Set permissions: `chmod 600 /var/lib/danube/keys/git_deploy_key`
+Setup:
+
+```bash
+ssh-keygen -t ed25519 -f /var/lib/danube/keys/git_deploy_key -N ''
+chmod 600 /var/lib/danube/keys/git_deploy_key
+```
+
+Add the public key to the Blueprint repository as a read-only deploy key.
 
 ### HTTPS with Token
 
-```toml
-[config_repo]
-url = "https://oauth2:YOUR_TOKEN@github.com/myorg/danube-blueprint.git"
-```
-
-**Not recommended**: Token visible in config file and process list.
-
-### HTTPS with Credentials Store
-
-```bash
-# Configure Git credential helper
-git config --global credential.helper store
-echo "https://user:token@github.com" > ~/.git-credentials
-```
+Supported, but less preferred because credentials are easier to leak through config/process inspection.
 
 ## Production Recommendations
 
-### Security
-
-- Store config file with restricted permissions: `chmod 600 /etc/danube/danube.toml`
-- Use SSH key authentication for Blueprint repo
-- Rotate SSH keys periodically
-- Never commit secrets to config file (use Blueprint repo for secret references only)
-
-### Performance
-
-- Increase `sync_interval` for large Blueprint repos: `"5m"` instead of `"60s"`
-- Use SSD storage for `data_dir`
-- Co-locate Master and K8s API server on same network for low latency
-
-### Monitoring
-
-- Enable observability settings
-- Configure OTLP endpoint for centralized metrics/traces
-- Set log level to `info` or `warn` in production (not `debug`)
+- Run Danube on a dedicated Linux host.
+- Restrict config permissions: `chmod 600 /etc/danube/danube.toml`.
+- Use SSH deploy keys for the Blueprint repo.
+- Use SSD-backed `/var/lib/danube`.
+- Keep Podman patched.
+- Prefer rootless runtime mode where practical.
+- Put Danube behind TLS.
+- Keep `default_deny_egress = true` unless explicitly operating in a trusted dev mode.
 
 ## Configuration Reload
 
-To reload configuration without restarting Master:
-
 ```bash
-# Send SIGHUP to Master process
 kill -HUP $(pgrep -f "danube master")
 ```
 
-Master reloads:
-- Logging configuration
-- Observability settings
-- Blueprint repo settings (triggers immediate sync)
+Reloadable:
 
-**Not reloaded** (requires restart):
-- Server bind addresses
-- K8s namespaces
-- Data directory path
+- logging level/format
+- observability settings
+- Blueprint repo settings
+- runner concurrency limits where supported
+- egress allowlist through Blueprint sync
+
+Requires restart:
+
+- server bind addresses
+- data directory
+- selected runner runtime

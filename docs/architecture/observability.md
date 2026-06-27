@@ -4,23 +4,25 @@
 
 ### Master Logs
 
-**Format**: Structured JSON (via Python logging with JSON formatter)
+**Format**: Structured JSON.
 
-**Destination**: stdout (captured by container log collector)
+**Destination**: stdout by default.
 
 **Log Levels**:
-- `ERROR`: Unrecoverable errors (database connection lost, K8s API unreachable)
-- `WARNING`: Recoverable issues (failed secret access, webhook validation failed)
-- `INFO`: Notable events (job started, pipeline triggered, Blueprint sync completed)
-- `DEBUG`: Detailed diagnostics (HTTP/2 RPC calls, SQL queries)
-- `TRACE`: Very verbose (not used by default)
 
-**Configuration**: Set via environment variable:
+- `ERROR`: unrecoverable errors, database unavailable, runner unavailable
+- `WARNING`: recoverable issues, webhook validation failed, denied egress, cleanup retry
+- `INFO`: job started/finished, pipeline triggered, Blueprint sync completed
+- `DEBUG`: RPC calls, runner operations, SQL diagnostics
+
+Configuration:
+
 ```bash
-export DANUBE_LOG_LEVEL=INFO  # Default
+export DANUBE_LOG_LEVEL=INFO
 ```
 
-**Example log entry**:
+Example:
+
 ```json
 {
   "timestamp": "2026-01-10T12:34:56.789Z",
@@ -30,47 +32,44 @@ export DANUBE_LOG_LEVEL=INFO  # Default
   "job_id": "abc123",
   "pipeline": "frontend-build",
   "trigger_type": "webhook",
-  "trigger_ref": "main/abc123def",
-  "user": "alice@example.com"
+  "trigger_ref": "main/abc123def"
 }
 ```
 
 ### Job Logs
 
-**Format**: Plain text (stdout/stderr from Worker container)
+**Format**: Plain text stdout/stderr from Worker commands.
 
-**Storage**: `/var/lib/danube/logs/<job_id>.log`
+**Storage**:
 
-**Write pattern**: Append-only during job execution (batched flushes)
+```text
+/var/lib/danube/logs/<job_id>.log
+```
 
-**Streaming**: Master reads file and streams to SSE clients in real-time; backpressure blocks log ingestion when disk is saturated
+**Streaming**: Master writes logs to disk and broadcasts new log records to SSE clients.
 
-**Retention**: Deleted by Reaper after `retention.logs_days`
+**Retention**: Reaper deletes logs after `retention.logs_days`.
 
 ### Sensitive Data Scrubbing
 
-Master automatically redacts patterns before writing to log files:
+Master redacts sensitive patterns before writing logs or broadcasting to clients:
 
-- JWT tokens (`eyJ...`)
-- Common secret patterns (`password=...`, `token=...`, `api_key=...`)
-- Email addresses in command output (configurable)
-
-**Implementation**: Regex-based scanner applied before disk write and SSE broadcast.
+- active job secrets
+- JWT-like tokens
+- common key/value secret patterns
+- configurable custom regexes
 
 ## Metrics
 
-### OpenTelemetry Integration
+Master exposes metrics through:
 
-Master exports metrics via:
-- **Prometheus endpoint**: `GET /metrics` (Prometheus text format)
-- **OTLP exporter**: Pushes to configured collector (optional)
+- `GET /metrics` in Prometheus text format
+- optional OTLP exporter
 
-**Configuration**:
+Configuration:
+
 ```json
 {
-  "apiVersion": "danube.dev/v1",
-  "kind": "Config",
-  "metadata": {"name": "global"},
   "spec": {
     "observability": {
       "otel_endpoint": "http://otel-collector:4317",
@@ -81,173 +80,112 @@ Master exports metrics via:
 }
 ```
 
-
 ### Key Metrics
 
 **Job Metrics**:
-```
+
+```text
 danube_jobs_total{status="success|failure|timeout|cancelled", pipeline="..."}
-danube_job_duration_seconds{pipeline="..."}  # Histogram
-danube_active_jobs  # Gauge
-danube_job_queue_size  # Gauge
+danube_job_duration_seconds{pipeline="..."}
+danube_active_jobs
+danube_job_queue_size
 danube_job_timeouts_total{pipeline="..."}
 ```
 
-**Database Metrics**:
-```
-danube_db_queries_total{operation="select|insert|update|delete"}
-danube_db_query_duration_seconds{operation="..."}  # Histogram
-danube_db_connections_active  # Gauge
-danube_db_lock_wait_seconds_total  # Counter (WAL mode contention)
+**Runner Metrics**:
+
+```text
+danube_runner_operations_total{operation="start|exec|stop|cleanup", status="success|error"}
+danube_runner_operation_duration_seconds{operation="..."}
+danube_runner_containers_active
+danube_runner_cleanup_failures_total
+danube_runner_workspace_bytes
 ```
 
-**K8s Metrics**:
-```
-danube_k8s_api_calls_total{operation="create_pod|delete_pod|exec", status="success|error"}
-danube_k8s_api_call_duration_seconds{operation="..."}  # Histogram
-danube_k8s_pods_active{namespace="danube-jobs"}  # Gauge
+**Database Metrics**:
+
+```text
+danube_db_queries_total{operation="select|insert|update|delete"}
+danube_db_query_duration_seconds{operation="..."}
+danube_db_connections_active
+danube_db_lock_wait_seconds_total
 ```
 
 **Secret Access**:
-```
+
+```text
 danube_secret_requests_total{pipeline="...", secret_key="..."}
 danube_secret_cache_hits_total
 danube_secret_cache_misses_total
 ```
 
 **Log Streaming**:
-```
+
+```text
 danube_log_bytes_written_total{job_id="..."}
-danube_sse_clients_active  # Gauge
+danube_sse_clients_active
 danube_sse_messages_sent_total
 ```
 
 **Blueprint Sync**:
-```
+
+```text
 danube_blueprint_sync_total{status="success|error"}
-danube_blueprint_sync_last_success  # Unix timestamp
-danube_blueprint_sync_duration_seconds  # Histogram
+danube_blueprint_sync_last_success
+danube_blueprint_sync_duration_seconds
 danube_blueprint_changes_applied_total{type="pipeline|user|team"}
 ```
 
-**Registry**:
+**Egress**:
+
+```text
+danube_egress_requests_total{decision="allow|deny", host="..."}
+danube_egress_bytes_total{host="..."}
+danube_egress_denied_total{reason="..."}
 ```
-danube_registry_pulls_total{image="..."}
-danube_registry_pushes_total{image="..."}
-danube_registry_storage_bytes  # Gauge
-```
-
-**Dex/Auth**:
-```
-danube_auth_logins_total{status="success|failure"}
-danube_auth_permission_denied_total{resource="pipeline|secret|artifact"}
-danube_auth_active_sessions  # Gauge
-```
-
-### Prometheus Setup
-
-Example Prometheus scrape config:
-
-```yaml
-scrape_configs:
-  - job_name: danube
-    static_configs:
-      - targets:
-          - danube.example.com:8080
-    metrics_path: /metrics
-    scrape_interval: 15s
-```
-
-### Grafana Dashboards
-
-Recommended dashboard panels:
-
-1. **Job Overview**:
-   - Jobs per hour (rate)
-   - Success rate (%)
-   - Average job duration
-   - Active jobs
-
-2. **Performance**:
-   - HTTP/2 RPC request rate
-   - K8s API latency
-   - Database query duration (p50, p95, p99)
-   - Log streaming throughput
-
-3. **Errors**:
-   - Failed jobs by pipeline
-   - K8s API errors
-   - Database lock waits
-   - Blueprint sync failures
-
-4. **Capacity**:
-   - Active pods
-   - Disk usage (logs, artifacts, registry)
-   - Memory usage
-   - CPU usage
 
 ## Tracing
 
-### OpenTelemetry Traces
-
-Master creates trace spans for:
+Master creates OpenTelemetry spans for:
 
 **HTTP Requests**:
-```
+
+```text
 Span: POST /api/v1/jobs
 ├─ Span: Check auth
-├─ Span: Load pipeline from DB
+├─ Span: Load pipeline
 ├─ Span: Create job record
-└─ Span: Trigger orchestrator
+└─ Span: Enqueue job
 ```
 
 **Job Execution**:
-```
+
+```text
 Span: Job abc123
-├─ Span: Create Pod
-├─ Span: Wait for Pod ready
+├─ Span: Runner start environment
+├─ Span: Wait for Coordinator
 ├─ Span: Execute step 1
-│  ├─ Span: HTTP/2 RunStep
-│  └─ Span: K8s Exec API
-├─ Span: Execute step 2
-└─ Span: Delete Pod
+│  ├─ Span: RPC RunStep
+│  └─ Span: Runner exec
+├─ Span: Upload artifacts
+├─ Span: Generate provenance
+└─ Span: Runner cleanup
 ```
 
-**HTTP/2 RPC Calls**:
+**Egress Requests**:
+
+```text
+Span: Egress github.com
+├─ Span: Match allowlist
+├─ Span: Proxy request
+└─ Span: Record audit event
 ```
-Span: POST /rpc/run-step
-├─ Span: Validate job_id
-├─ Span: Load secret (if needed)
-├─ Span: K8s Exec
-└─ Span: Stream logs
-```
-
-### Trace Context Propagation
-
-- HTTP requests: `traceparent` header
-- HTTP/2 RPC calls: OpenTelemetry metadata
-- Job logs: Trace ID injected into structured logs
-
-### Jaeger Integration
-
-Example configuration:
-
-```yaml
-spec:
-  observability:
-    otel_endpoint: "http://jaeger-collector:4317"
-    traces_enabled: true
-```
-
-Traces exported via OTLP to Jaeger collector.
 
 ## Health Checks
 
-### Endpoints
+### `GET /health`
 
-**`GET /health`**
-
-Returns 200 if API is responsive (liveness probe).
+Liveness probe. Returns 200 when the API process is responsive.
 
 ```json
 {
@@ -256,165 +194,59 @@ Returns 200 if API is responsive (liveness probe).
 }
 ```
 
-**`GET /health/ready`**
+### `GET /health/ready`
 
-Returns 200 if all subsystems healthy (readiness probe).
+Readiness probe. Returns 200 when required subsystems are healthy.
 
 ```json
 {
   "status": "ready",
   "checks": {
     "database": "ok",
-    "k8s": "ok",
-    "dex": "ok",
-    "registry": "ok",
-    "blueprint_sync": "ok"
+    "runner": "ok",
+    "container_runtime": "ok",
+    "blueprint_sync": "ok",
+    "disk": "ok"
   },
   "timestamp": "2026-01-10T12:34:56Z"
 }
 ```
 
-Returns 503 if any check fails:
+Returns 503 when a required check fails.
 
-```json
-{
-  "status": "not_ready",
-  "checks": {
-    "database": "ok",
-    "k8s": "ok",
-    "dex": "degraded",  # Dex pod not running
-    "registry": "ok",
-    "blueprint_sync": "stale"  # Last sync >5min ago
-  },
-  "timestamp": "2026-01-10T12:34:56Z"
-}
-```
+## Periodic Health Checks
 
-### Kubernetes Probes
+Master periodically checks:
 
-```yaml
-livenessProbe:
-  httpGet:
-    path: /health
-    port: 8080
-  initialDelaySeconds: 10
-  periodSeconds: 30
-
-readinessProbe:
-  httpGet:
-    path: /health/ready
-    port: 8080
-  initialDelaySeconds: 5
-  periodSeconds: 10
-```
-
-### Periodic Health Checks
-
-Master runs background task every 5 minutes:
-
-1. Check SQLite connection (`SELECT 1`)
-2. Check K8s API (`GET /api/v1/namespaces/danube-system`)
-3. Check Dex pod status
-4. Check Registry pod status
-5. Check Blueprint sync freshness (last sync <5min ago)
-
-If checks fail, attempt self-healing:
-- Restart failed Dex/Registry pods
-- Force Blueprint sync
-- Clear stale database locks
-- Log health check results
-
-Alert on repeated failures (integrate with monitoring system).
+1. SQLite connectivity
+2. rootless Podman availability
+3. runner cleanup backlog
+4. Blueprint sync freshness
+5. disk usage under `/var/lib/danube`
+6. egress proxy health if enabled
 
 ## Alerting Recommendations
 
-### Critical Alerts
+### Critical
 
 - Master process down
 - Database unavailable
-- K8s API unreachable
+- Container runtime unavailable
 - Disk usage >90%
-- Job failure rate >50% (over 1 hour)
+- Cleanup failures accumulating
+- Job failure rate >50% over 1 hour
 
-### Warning Alerts
+### Warning
 
-- Dex pod restart
-- Registry pod restart
-- Blueprint sync stale (>10min)
-- Job timeout rate >10%
+- Blueprint sync stale
+- High timeout rate
 - High database lock contention
-- SSE client connection failures
-
-### Alert Destinations
-
-Configure via external tools (Prometheus Alertmanager, Grafana Alerts):
-
-- PagerDuty (critical)
-- Slack (warning)
-- Email (all)
+- Egress denied spike
+- SSE connection failures
+- Workspace/cache growth above expected limits
 
 ## Log Aggregation
 
-For production, send Master logs to centralized system:
+Production deployments should forward structured Master logs to a central system such as Loki, Elasticsearch, or CloudWatch.
 
-**Fluentd**:
-```yaml
-# DaemonSet collects container logs
-- match: danube-system.master.*
-  type: elasticsearch
-  host: elasticsearch.logging.svc
-```
-
-**Promtail + Loki**:
-```yaml
-scrape_configs:
-  - job_name: danube
-    kubernetes_sd_configs:
-      - role: pod
-        namespaces:
-          names:
-            - danube-system
-    relabel_configs:
-      - source_labels: [__meta_kubernetes_pod_label_app]
-        regex: danube-master
-        action: keep
-```
-
-**CloudWatch** (AWS):
-```bash
-# Forward logs via CloudWatch agent
-aws logs create-log-group --log-group-name /danube/master
-```
-
-## Performance Profiling
-
-For debugging performance issues:
-
-**Python profiling**:
-```python
-import cProfile
-import pstats
-
-# In master.py
-if os.getenv("DANUBE_PROFILE"):
-    cProfile.run("main()", "danube.prof")
-    stats = pstats.Stats("danube.prof")
-    stats.sort_stats("cumulative")
-    stats.print_stats(20)
-```
-
-**Memory profiling**:
-```bash
-# Install memory_profiler
-uv add --dev memory-profiler
-
-# Run with profiling
-python -m memory_profiler danube/master.py
-```
-
-**Async profiling**:
-```python
-# Use py-spy for async profiling
-pip install py-spy
-sudo py-spy record -o profile.svg --pid <master_pid>
-```
+Job logs remain available through Danube's artifact/log storage and retention policy.

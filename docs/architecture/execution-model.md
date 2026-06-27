@@ -1,205 +1,204 @@
 # Execution Model
 
-## Pod Pattern
+## Job Environment Pattern
 
-Each pipeline execution spawns a single Kubernetes Pod containing two containers:
+Each pipeline execution creates an ephemeral local job environment with two containers and one shared workspace.
 
 | Container | Image | Role |
 |-----------|-------|------|
-| **Coordinator** | `danube-coordinator:latest` | Executes `danubefile.py`, calls Master via HTTP/2 JSON |
-| **Worker** | User-defined (e.g., `node:18`, Kaniko) | Receives shell commands from Master via K8s Exec API |
+| **Coordinator** | Danube-provided Python image | Executes `danubefile.py`, calls Master RPC |
+| **Worker** | User-defined image | Receives shell commands from Master through the runner |
 
-### Why Two Containers?
+The containers are managed by Danube's local runner using rootless Podman. Each Danube job maps to one Podman pod containing the Coordinator and Worker containers.
 
-- **Security**: Coordinator has no shell access; can't execute arbitrary code
-- **Isolation**: Build tools live in Worker, SDK lives in Coordinator
-- **Flexibility**: Users choose Worker image (any base image)
+## Why Two Containers?
+
+- **Separation of concerns**: Pipeline control code lives in Coordinator; build tools live in Worker.
+- **Security**: Coordinator does not directly execute shell commands.
+- **Flexibility**: Users choose Worker images per pipeline or step.
+- **Clean logging/control**: Master mediates every command and captures output centrally.
 
 ## Execution Flow
 
-```
-1. Webhook arrives or cron triggers pipeline
-         │
-         ▼
-2. Master creates Pod manifest (Coordinator + Worker)
-         │
-         ▼
-3. K3s schedules Pod, pulls images
-         │
-         ▼
-4. Coordinator starts, imports danubefile.py
-         │
-         ▼
-5. User code calls step.run("npm install")
-         │
-         ▼
-6. Coordinator → HTTP/2 JSON → Master: RunStep(cmd="npm install")
-         │
-         ▼
-7. Master → K8s Exec API: Run in Worker container
-         │
-         ▼
-8. Master streams stdout/stderr → disk + SSE (UI)
-         │
-         ▼
-9. Step completes, Master returns exit code
-         │
-         ▼
-10. Coordinator continues or exits if step failed
-         │
-         ▼
-11. Master detects Pod exit, updates job status
-         │
-         ▼
-12. Master deletes Pod (ephemeral)
-```
-
-## Networking Strategy
-
-All communication flows through the Master (hub-and-spoke):
-
-```
-Coordinator ──HTTP/2+JSON──▶ Master ──K8s Exec──▶ Worker
-     ▲                  │
-     │                  │
-     └──────────────────┘
-          (Response)
+```text
+1. Webhook, cron, or manual trigger creates job
+        │
+        ▼
+2. Master records job as pending
+        │
+        ▼
+3. Master asks Local Runner to create job environment
+        │
+        ▼
+4. Runner creates workspace and one Podman pod with Coordinator and Worker containers
+        │
+        ▼
+5. Coordinator starts and imports danubefile.py
+        │
+        ▼
+6. User code calls step.run("npm install")
+        │
+        ▼
+7. Coordinator → Master RPC: RunStep(command="npm install")
+        │
+        ▼
+8. Master → Runner: exec command in Worker
+        │
+        ▼
+9. Runner streams stdout/stderr back to Master
+        │
+        ▼
+10. Master writes logs to disk and streams to UI clients
+        │
+        ▼
+11. Step completes; Master returns exit code
+        │
+        ▼
+12. Coordinator continues or fails pipeline
+        │
+        ▼
+13. Job finishes, times out, or is cancelled
+        │
+        ▼
+14. Master stores final state, artifacts, provenance
+        │
+        ▼
+15. Runner deletes containers/network/temp state
 ```
 
-**No direct Coordinator ↔ Worker communication.**
+## Communication Strategy
+
+All control flows through the Master:
+
+```text
+Coordinator ──HTTP/JSON──▶ Master ──runtime exec──▶ Worker
+```
+
+There is no direct Coordinator → Worker command channel.
 
 ### Benefits
 
-- No service discovery needed
-- Centralized authentication (only Master has K8s credentials)
-- Single point for log aggregation
-- Simplified network policies
+- Centralized authorization
+- Centralized log capture
+- Consistent timeout/cancellation behavior
+- Single audit point for command execution
+- Runner backend can change without changing pipeline semantics
 
 ## State Management
 
 | State Type | Location | Scope | Persistence |
 |------------|----------|-------|-------------|
 | Python variables | Coordinator memory | Pipeline execution | Ephemeral |
-| Shell variables | Worker process | Single command | Does NOT persist |
-| Environment variables | Passed via `env={}` | Per-step | Per-command |
-| Captured output | HTTP/2 JSON response | Per-step | Returned to Coordinator |
+| Shell variables | Worker process | Single command | Does not persist |
+| Environment variables | Passed via `env={}` | Per step | Per command |
+| Files | `/workspace` | Job | Deleted after job unless uploaded |
+| Captured output | RPC response | Per step | Optional |
+| Logs | Master log file | Job | Retained by policy |
 
-### Shell Execution Model: Stateless
+## Stateless Shell Execution
 
-**Each `step.run()` spawns a fresh `/bin/sh -c` process. Commands are escaped with `shlex` before execution.**
+Each `step.run()` starts a fresh shell process in the Worker.
 
 ```python
-# ❌ WRONG: cd does not persist
+# Wrong: cd does not persist
 step.run("cd /app")
-step.run("npm install")  # Runs in /, not /app
+step.run("npm install")
 
-# ✅ CORRECT: Chain commands
+# Correct: chain commands
 step.run("cd /app && npm install")
-
-# ✅ ALSO CORRECT: Use Python state
-step.run("cd /app && pwd", capture=True)  # Returns "/app"
-app_dir = "/app"
-step.run(f"cd {app_dir} && npm install")
 ```
 
-### Environment Variables
-
-Passed explicitly per-step:
+Environment variables are also per-command:
 
 ```python
 step.run(
     "echo $API_KEY",
-    env={"API_KEY": secrets.get("API_KEY")}
+    env={"API_KEY": secrets.get("API_KEY")},
 )
 ```
 
-**Environment variables do NOT persist between steps.**
-
 ## Workspace
 
-Pipeline Pods have a shared volume mounted at `/workspace` in both containers.
+Every job gets a private workspace directory under the Danube data directory, mounted into both containers at `/workspace`.
 
-- Coordinator can write files (e.g., generated config)
-- Worker reads files, runs builds, writes artifacts
-- Volume deleted when Pod is deleted
+- Coordinator can write generated files.
+- Worker runs commands and writes build outputs.
+- Artifacts must be uploaded before job cleanup.
+- Workspace is deleted after job completion unless retention/debug settings preserve it.
 
 ## Secrets Access
 
-Secrets are NOT injected as environment variables. Instead:
+Secrets are not injected into container manifests by default. They are fetched on demand:
 
 ```python
-from danube import secrets
+from danube import secrets, step
 
-# Coordinator calls Master via HTTP/2 JSON
 api_key = secrets.get("API_KEY")
-
-# Use in commands
-step.run(f"curl -H 'Authorization: Bearer {api_key}' https://api.example.com")
+step.run(
+    "curl -H 'Authorization: Bearer $API_KEY' https://api.example.com",
+    env={"API_KEY": api_key},
+)
 ```
 
 Master validates:
-1. Job is active
-2. Job's pipeline has access to secret
-3. Returns decrypted value
 
-Secrets never appear in:
-- Pod environment variables
-- Pod YAML manifests
-- Log files (scrubbed by Master)
+1. Job is active
+2. Pipeline has access to the secret
+3. Secret is requested through the Coordinator RPC path
+
+Secrets are scrubbed from logs before storage and streaming.
 
 ## Artifact Upload
 
 ```python
 from danube import artifacts
 
-# Upload single file
 artifacts.upload("dist/app.tar.gz", name="app-bundle")
-
-# Upload directory
 artifacts.upload("coverage/", name="coverage-report")
 ```
 
-Artifacts stored in `/var/lib/danube/artifacts/<job_id>/<artifact_name>`.
+Artifacts are stored under:
+
+```text
+/var/lib/danube/artifacts/<job_id>/<artifact_name>
+```
 
 ## Container Image Building
 
-Use Kaniko for unprivileged Docker builds:
+Container image builds should use unprivileged build tools where possible, such as BuildKit rootless, Kaniko, Buildah, or runtime-supported build commands.
+
+Example:
 
 ```python
 step.run(
-    "/kaniko/executor "
-    "--context=/workspace "
-    "--dockerfile=Dockerfile "
-    "--destination=registry.danube-system:5000/myapp:latest "
-    "--cache=true",
+    "buildctl build "
+    "--frontend=dockerfile.v0 "
+    "--local context=/workspace "
+    "--local dockerfile=/workspace "
+    "--output type=image,name=registry.local/myapp:latest,push=true",
     name="Build Image",
-    image="gcr.io/kaniko-project/executor:latest"
 )
 ```
 
-Kaniko:
-- Runs without Docker daemon
-- Supports layer caching
-- Outputs to internal registry
-- SLSA L3 compliant (hermetic)
+The chosen build strategy must not require privileged containers by default.
 
 ## Job Lifecycle States
 
-```
+```text
 pending → scheduling → running → [success | failure | timeout | cancelled]
 ```
 
-- **pending**: Job created, waiting for Pod creation
-- **scheduling**: Pod submitted to K8s, waiting for scheduling
-- **running**: Pod running, Coordinator executing pipeline
-- **success**: Pipeline completed with exit code 0
-- **failure**: Step exited non-zero
-- **timeout**: Exceeded `max_duration_seconds`
-- **cancelled**: User cancelled via API
+- **pending**: Job created, waiting for runner capacity
+- **scheduling**: Runner is creating workspace/containers/network
+- **running**: Coordinator is executing pipeline
+- **success**: Pipeline completed successfully
+- **failure**: A step or runtime operation failed
+- **timeout**: Job exceeded `max_duration_seconds`
+- **cancelled**: User or operator cancelled the job
 
 ## Timeouts
 
-Configured per-pipeline in Blueprint JSON:
+Configured per pipeline:
 
 ```json
 {
@@ -209,66 +208,81 @@ Configured per-pipeline in Blueprint JSON:
 }
 ```
 
-Master monitors job duration. If exceeded:
-1. Delete Pod immediately
-2. Mark job as `timeout`
-3. Log timeout event
+On timeout, Master:
+
+1. Marks cancellation reason
+2. Asks runner to stop containers
+3. Kills remaining runtime processes if needed
+4. Finalizes logs
+5. Marks job `timeout`
+6. Runs cleanup
 
 ## Error Handling
 
 ### Step Failure
 
-By default, if a step exits non-zero, pipeline stops:
+By default, a non-zero step exits the pipeline:
 
 ```python
-step.run("npm test")  # If fails, pipeline stops here
-step.run("npm run build")  # Not executed
+step.run("npm test")
+step.run("npm run build")  # not reached if tests fail
 ```
 
-Continue on failure:
+Continue manually:
 
 ```python
 exit_code = step.run("npm test", check=False)
-if exit_code != 0:
-    print("Tests failed, skipping build")
-else:
+if exit_code == 0:
     step.run("npm run build")
 ```
 
-### Network Failures
+### Coordinator Failure
 
-If Master ↔ Coordinator HTTP/2 connection breaks:
-- Coordinator retries for 30 seconds
-- If still failing, Coordinator exits with error
-- Master marks job as `failure`
-- Pod deleted
+If Coordinator exits unexpectedly:
+
+- Master marks job `failure`
+- Runner stops Worker
+- Logs and artifacts already received remain available
+- Cleanup runs
+
+### Runner Failure
+
+If the local runner cannot create, exec, or clean containers:
+
+- Master records the failure reason
+- Job moves to `failure`
+- Reaper later retries cleanup of stale runtime state
 
 ## Resource Limits
 
-Pod resource requests and limits:
+Pipeline config may define Worker limits:
 
-```yaml
-# Hard-coded defaults (TODO: make configurable)
-resources:
-  requests:
-    cpu: "500m"
-    memory: "512Mi"
-  limits:
-    cpu: "2000m"
-    memory: "2Gi"
+```json
+{
+  "spec": {
+    "worker": {
+      "resources": {
+        "requests": {"cpu": "500m", "memory": "512Mi"},
+        "limits": {"cpu": "2000m", "memory": "2Gi"}
+      }
+    }
+  }
+}
 ```
 
-If Worker exceeds memory limit, K8s kills container → job marked `failure`.
+The local runner maps these values to Podman's CPU, memory, and process-limit controls.
 
 ## Concurrency
 
-Master can run multiple jobs concurrently. Each job gets its own Pod.
+The Master can run multiple jobs concurrently on the same host. Each job receives separate containers, workspace, and network controls.
 
-**Considerations**:
-- K8s cluster capacity limits concurrent pods
-- SQLite write contention (WAL mode helps)
-- Log streaming overhead (SSE connections)
+Capacity is bounded by:
 
-**Default**: No hard limit, rely on K8s scheduling.
+- host CPU/RAM/disk
+- rootless Podman runtime limits
+- configured global concurrency
+- per-pipeline concurrency policy
+- SQLite write contention
+- log I/O throughput
 
-**Future**: Configurable max concurrent jobs per pipeline or globally.
+Default behavior should include a conservative global concurrency limit rather than relying on unbounded host scheduling.

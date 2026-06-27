@@ -2,7 +2,7 @@
 
 ## Overview
 
-All Danube configuration (pipelines, users, teams, global settings) is managed via a Git repository using declarative JSON files. The Blueprint repository is the source of truth for GitOps configuration changes.
+All Danube configuration is managed through a Git repository containing declarative JSON files. The Blueprint repository is the source of truth for pipelines, users, teams, permissions, retention, networking policy, and global appliance settings.
 
 ## `danubefile.py` Quick Example
 
@@ -17,20 +17,16 @@ def build():
 
 ## Repository Structure
 
-```
+```text
 danube-blueprint/
-├── config.json           # Global settings
-├── users.json            # User definitions
-├── teams.json            # Team definitions
+├── config.json
+├── users.json
+├── teams.json
 └── pipelines/
     ├── frontend-build.json
     ├── backend-build.json
     └── deploy-prod.json
 ```
-
-## Blueprint JSON Schema
-
-Blueprint files are validated against a JSON Schema before sync. Planned schema location: `docs/configuration/blueprint.schema.json`.
 
 ## Global Configuration (`config.json`)
 
@@ -44,44 +40,42 @@ Blueprint files are validated against a JSON Schema before sync. Planned schema 
   "spec": {
     "server": {
       "bind_address": "0.0.0.0:8080",
+      "rpc_address": "127.0.0.1:9000",
       "data_dir": "/var/lib/danube"
     },
-    "kubernetes": {
-      "namespace_jobs": "danube-jobs",
-      "coordinator_image": "danube-coordinator:latest"
+    "runner": {
+      "type": "local",
+      "runtime": "podman",
+      "coordinator_image": "danube-coordinator:latest",
+      "max_concurrent_jobs": 4,
+      "default_worker_resources": {
+        "requests": {"cpu": "500m", "memory": "512Mi"},
+        "limits": {"cpu": "2000m", "memory": "2Gi"}
+      }
     },
     "retention": {
       "logs_days": 30,
       "artifacts_days": 14,
-      "registry_images_days": 30
+      "registry_images_days": 30,
+      "workspaces_days": 0
+    },
+    "networking": {
+      "default_deny_egress": true,
+      "egress_proxy_enabled": true,
+      "egress_allowlist": [
+        "github.com",
+        "*.githubusercontent.com",
+        "registry.npmjs.org",
+        "pypi.org",
+        "registry.local"
+      ]
     },
     "observability": {
       "otel_endpoint": "http://otel-collector:4317",
       "metrics_enabled": true,
       "traces_enabled": true
     },
-    "egress_allowlist": [
-      "registry.npmjs.org",
-      "pypi.org",
-      "*.github.com",
-      "registry.danube-system"
-    ],
     "git_authentication": [
-      {
-        "type": "github_app",
-        "name": "myorg-app",
-        "app_id": "123456",
-        "installation_id": "78910",
-        "private_key_secret": "github-app-myorg-key",
-        "match_patterns": ["github.com/myorg/*"]
-      },
-      {
-        "type": "gitlab_token",
-        "name": "gitlab-internal",
-        "url": "https://gitlab.company.com",
-        "token_secret": "gitlab-token",
-        "match_patterns": ["gitlab.company.com/*"]
-      },
       {
         "type": "ssh_key",
         "name": "fallback",
@@ -92,6 +86,8 @@ Blueprint files are validated against a JSON Schema before sync. Planned schema 
   }
 }
 ```
+
+The initial local runner supports `runtime: "podman"`. Danube manages Podman rootless mode and creates one Podman pod per job.
 
 ## User Definitions (`users.json`)
 
@@ -107,17 +103,6 @@ Blueprint files are validated against a JSON Schema before sync. Planned schema 
       "email": "alice@example.com",
       "password_hash": "$2b$12$KIXxKj5M..."
     }
-  },
-  {
-    "apiVersion": "danube.dev/v1",
-    "kind": "User",
-    "metadata": {
-      "name": "bob"
-    },
-    "spec": {
-      "email": "bob@example.com",
-      "password_hash": "$2b$12$..."
-    }
   }
 ]
 ```
@@ -126,16 +111,6 @@ Generate password hashes with:
 
 ```bash
 python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt()).decode())"
-```
-
-### Password Hash Generation
-
-```bash
-# Using Python
-python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt()).decode())"
-
-# Using htpasswd (if installed)
-htpasswd -bnBC 12 "" YOUR_PASSWORD | tr -d ':\n'
 ```
 
 ## Team Definitions (`teams.json`)
@@ -188,11 +163,14 @@ htpasswd -bnBC 12 "" YOUR_PASSWORD | tr -d ':\n'
     "max_duration_seconds": 3600,
     "workspace_size_gb": 10,
     "worker": {
-      "image": "node:18-alpine",
+      "image": "node:20-alpine",
       "resources": {
         "requests": {"cpu": "500m", "memory": "512Mi"},
         "limits": {"cpu": "2000m", "memory": "2Gi"}
       }
+    },
+    "networking": {
+      "egress_allowlist": ["registry.npmjs.org", "github.com"]
     },
     "permissions": [
       {"team": "engineering", "level": "admin"},
@@ -201,6 +179,8 @@ htpasswd -bnBC 12 "" YOUR_PASSWORD | tr -d ':\n'
   }
 }
 ```
+
+Pipeline-level networking settings narrow or extend global policy according to the server's configured rules.
 
 ## Pipeline Script (`danubefile.py` in app repo)
 
@@ -211,14 +191,13 @@ from danube import pipeline, step, ctx, secrets, artifacts
 def build():
     print(f"Building {ctx.repo} on {ctx.branch}")
     print(f"Commit: {ctx.commit_sha}")
-    print(f"Trigger: {ctx.trigger_type}")
 
     step.run("npm ci", name="Install Dependencies")
 
     exit_code = step.run(
         "npm test -- --coverage",
         name="Run Tests",
-        check=False
+        check=False,
     )
 
     artifacts.upload("coverage/", name="coverage-report")
@@ -231,185 +210,81 @@ def build():
         step.run("npm run build", name="Build Production")
         artifacts.upload("dist/", name="production-build")
 
-        api_token = secrets.get("DOCKER_HUB_TOKEN")
-
+        token = secrets.get("DEPLOY_TOKEN")
         step.run(
-            f"/kaniko/executor "
-            f"--context=/workspace "
-            f"--dockerfile=Dockerfile "
-            f"--destination=myorg/frontend:{ctx.commit_sha[:7]} "
-            f"--destination=myorg/frontend:latest "
-            f"--cache=true",
-            name="Build Container Image",
-            image="gcr.io/kaniko-project/executor:latest",
-            env={"DOCKER_CONFIG": "/kaniko/.docker"}
+            "./deploy.sh",
+            name="Deploy",
+            env={"DEPLOY_TOKEN": token},
         )
 ```
 
-`step.run()` commands are escaped internally with `shlex` before execution; no manual escaping is required in `danubefile.py`.
-
 ## Context Variables
 
-Available in `danubefile.py` via `ctx` object:
-
-| Variable | Type | Description | Example |
-|----------|------|-------------|---------|
-| `ctx.job_id` | str | Unique job ID | `"abc123"` |
-| `ctx.pipeline` | str | Pipeline name | `"frontend-build"` |
-| `ctx.repo` | str | Repository URL | `"github.com/myorg/frontend"` |
-| `ctx.branch` | str | Git branch | `"main"` |
-| `ctx.commit_sha` | str | Full commit SHA | `"abc123def456..."` |
-| `ctx.trigger_type` | str | Trigger type | `"webhook"`, `"cron"`, `"manual"` |
-| `ctx.trigger_ref` | str | Ref that triggered job | `"refs/heads/main"` |
-| `ctx.workspace` | str | Workspace path | `"/workspace"` |
+| Variable | Type | Description |
+|----------|------|-------------|
+| `ctx.job_id` | str | Unique job ID |
+| `ctx.pipeline` | str | Pipeline name |
+| `ctx.repo` | str | Repository URL |
+| `ctx.branch` | str | Git branch |
+| `ctx.commit_sha` | str | Full commit SHA |
+| `ctx.trigger_type` | str | `webhook`, `cron`, or `manual` |
+| `ctx.trigger_ref` | str | Ref that triggered the job |
+| `ctx.workspace` | str | Workspace path, usually `/workspace` |
 
 ## SDK API Reference
 
-### step.run()
-
-Execute command in Worker container. Commands are escaped with `shlex` before execution to prevent accidental shell injection.
+### `step.run()`
 
 ```python
 step.run(
-    command: str,                   # Shell command to execute
-    name: str | None = None,        # Step name (for UI)
-    image: str | None = None,       # Override Worker image
-    env: dict[str, str] | None = None,  # Environment variables
-    check: bool = True,             # Raise on non-zero exit
-    capture: bool = False,          # Return stdout as string
-    timeout: int | None = None      # Timeout in seconds
+    command: str,
+    name: str | None = None,
+    image: str | None = None,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+    capture: bool = False,
+    timeout: int | None = None,
 ) -> int | str
 ```
 
-**Returns**:
-- `int`: Exit code (if `capture=False`)
-- `str`: Captured stdout (if `capture=True`)
+Returns an exit code unless `capture=True`, in which case it returns stdout.
 
-**Example**:
-```python
-# Basic execution
-step.run("npm install")
-
-# With environment variable
-step.run("echo $API_KEY", env={"API_KEY": "secret"})
-
-# Capture output
-version = step.run("node --version", capture=True)
-print(f"Node version: {version}")
-
-# Continue on failure
-exit_code = step.run("npm test", check=False)
-if exit_code != 0:
-    print("Tests failed")
-```
-
-### secrets.get()
-
-Retrieve secret from SecretService.
+### `secrets.get()`
 
 ```python
 secrets.get(key: str) -> str
 ```
 
-**Example**:
-```python
-api_key = secrets.get("API_KEY")
-db_password = secrets.get("DB_PASSWORD")
-```
+Retrieves a secret through the Master SecretService.
 
-Secrets must be defined via API or Blueprint (future feature).
-
-### artifacts.upload()
-
-Upload file or directory as job artifact.
+### `artifacts.upload()`
 
 ```python
-artifacts.upload(
-    path: str,              # File or directory path
-    name: str | None = None # Artifact name (default: basename)
-) -> None
+artifacts.upload(path: str, name: str | None = None) -> None
 ```
 
-**Example**:
-```python
-# Upload single file
-artifacts.upload("app.tar.gz", name="app-bundle")
-
-# Upload directory
-artifacts.upload("coverage/", name="coverage-report")
-
-# Multiple artifacts
-artifacts.upload("dist/app.js", name="app-js")
-artifacts.upload("dist/app.css", name="app-css")
-```
+Uploads a file or directory as a job artifact.
 
 ## Validation
 
-Blueprint JSON files are validated on sync using the published JSON Schema:
+Blueprint sync validates:
 
-- Schema validation (JSON Schema)
-- Reference validation (teams exist, pipelines reference valid teams)
-- Duplicate detection (no duplicate pipeline names)
+- JSON Schema
+- duplicate names
+- referenced teams/users/pipelines
+- permission levels
+- cron expressions
+- runner/runtime values
+- egress allowlist syntax
 
-If validation fails, sync aborted and error logged. Previous configuration remains active.
-
-## Migration from Other CI/CD Systems
-
-### From GitHub Actions
-
-```yaml
-# .github/workflows/build.yml
-name: Build
-on: [push]
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - run: npm install
-      - run: npm test
-```
-
-**Equivalent danubefile.py**:
-```python
-from danube import pipeline, step
-
-@pipeline(name="Build")
-def build():
-    step.run("npm install")
-    step.run("npm test")
-```
-
-### From GitLab CI
-
-```yaml
-# .gitlab-ci.yml
-build:
-  script:
-    - npm install
-    - npm test
-  only:
-    - main
-```
-
-**Equivalent**:
-```python
-from danube import pipeline, step, ctx
-
-@pipeline(name="Build")
-def build():
-    if ctx.branch != "main":
-        return  # Skip on non-main branches
-    
-    step.run("npm install")
-    step.run("npm test")
-```
+If validation fails, sync is aborted and the previous active configuration remains in use.
 
 ## Best Practices
 
-1. **Separate concerns**: Use multiple pipelines for different workflows (build, test, deploy)
-2. **Fail fast**: Place quickest checks first (linting before full test suite)
-3. **Cache dependencies**: Use Kaniko caching for Docker builds
-4. **Parameterize**: Use secrets for credentials, not hardcoded values
-5. **Test locally**: Run `danubefile.py` with Danube CLI before pushing
-6. **Version control**: Treat the Blueprint repo as infrastructure code (review PRs, require approvals)
+1. Keep Blueprint changes reviewed through pull requests.
+2. Prefer pipeline-specific secrets over global secrets.
+3. Keep Worker images minimal and scanned.
+4. Chain shell commands when directory or environment state matters.
+5. Use internal mirrors for high-security or repeatable builds.
+6. Keep egress allowlists narrow.
+7. Upload required outputs before the job ends.

@@ -10,116 +10,95 @@
 | RAM | 8 GB | 16+ GB |
 | Disk | 50 GB SSD | 200+ GB SSD |
 | OS | Ubuntu 22.04, Debian 12 | Ubuntu 22.04 LTS |
-| Kernel | 4.9+ (eBPF) | 5.10+ |
+| Kernel | Modern Linux with namespaces/cgroups | 5.10+ |
 
 ### Required Software
 
 - Python 3.14+
-- [UV](https://github.com/astral-sh/uv) package manager
+- UV package manager
 - Git
-- K3s (installed by Danube installer)
-- Cilium CLI (installed by Danube installer)
+- Podman, managed by the Danube installer
 
 ## Installation Methods
 
-### Method 1: Helm Chart (Recommended)
+### Method 1: Bootstrap Installer
 
-The Helm chart deploys Danube, Dex, and the registry into your K3s cluster with local-path storage and best-effort durability.
-
-```bash
-helm repo add danube https://charts.danube.dev
-helm repo update
-
-helm upgrade --install danube danube/danube \
-  --namespace danube-system \
-  --create-namespace \
-  --values values.yaml
-```
-
-**What the chart does**:
-1. Creates `danube-system` and `danube-jobs` namespaces
-2. Deploys Master, Dex, and the registry
-3. Provisions PVCs for SQLite, logs, artifacts, and registry storage
-4. Applies default NetworkPolicies and services
-5. Enables Blueprint sync configuration
-6. Pins stateful workloads to the node with local-path volumes
-
-### Method 2: Bootstrap Installer (Optional)
-
-If you want a single-command install on a fresh host, use the bootstrap installer. It installs K3s + Cilium and then runs the Helm chart.
+The bootstrap installer prepares a single host for Danube:
 
 ```bash
 curl -fsSL https://get.danube.dev | bash
 ```
 
-### Method 3: Manual Installation
+Expected responsibilities:
 
-#### Step 1: Install K3s
+1. Check OS, kernel, CPU, RAM, and disk
+2. Install or validate Python/UV
+3. Install or validate rootless Podman
+4. Create `danube` user
+5. Create `/var/lib/danube`
+6. Generate required keys
+7. Write `/etc/danube/danube.toml`
+8. Install systemd service
+9. Start Danube
 
-```bash
-# Install K3s with Cilium
-curl -sfL https://get.k3s.io | sh -s - \
-  --flannel-backend=none \
-  --disable-network-policy \
-  --write-kubeconfig-mode=644
+### Method 2: Manual Installation
 
-# Wait for K3s to be ready
-kubectl wait --for=condition=ready node --all --timeout=60s
-```
+#### Step 1: Install Runtime
 
-#### Step 2: Install Cilium
-
-```bash
-# Install Cilium CLI
-CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
-CLI_ARCH=amd64
-curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
-sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
-rm cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-
-# Install Cilium CNI
-cilium install --version 1.14.5
-
-# Verify installation
-cilium status --wait
-```
-
-#### Step 3: Create Data Directory
+Install Podman:
 
 ```bash
-sudo mkdir -p /var/lib/danube/{logs,artifacts,registry,keys}
-sudo chown -R $USER:$USER /var/lib/danube
-chmod 700 /var/lib/danube/keys
+sudo apt-get update
+sudo apt-get install -y podman git sqlite3 uidmap
+podman info
 ```
+
+Danube uses Podman rootless mode through the Podman API.
+
+#### Step 2: Create User and Data Directory
+
+```bash
+sudo useradd -r -s /bin/bash -d /var/lib/danube -m danube
+sudo mkdir -p /var/lib/danube/{logs,artifacts,workspaces,registry,keys}
+sudo chown -R danube:danube /var/lib/danube
+sudo chmod 700 /var/lib/danube/keys
+```
+
+Configure rootless Podman for the `danube` user. The installer should normally handle `/etc/subuid`, `/etc/subgid`, user runtime directories, and the Podman API socket.
+
+#### Step 3: Validate Rootless Podman
+
+```bash
+sudo -u danube podman info
+sudo -u danube system service --time=0 unix:///run/user/$(id -u danube)/podman/podman.sock
+```
+
+In production, the Podman API service should be managed by systemd for the `danube` user. The Danube installer is responsible for configuring this reliably.
 
 #### Step 4: Generate Keys
 
 ```bash
-# Encryption key for secrets
-openssl rand -out /var/lib/danube/keys/encryption.key 32
-chmod 600 /var/lib/danube/keys/encryption.key
+sudo -u danube openssl rand -out /var/lib/danube/keys/encryption.key 32
+sudo chmod 600 /var/lib/danube/keys/encryption.key
 
-# Signing key for provenance
-ssh-keygen -t ed25519 -f /var/lib/danube/keys/signing.key -N '' -C "danube-provenance"
-chmod 600 /var/lib/danube/keys/signing.key
+sudo -u danube ssh-keygen -t ed25519 -f /var/lib/danube/keys/signing.key -N '' -C "danube-provenance"
+sudo chmod 600 /var/lib/danube/keys/signing.key
 
-# Git deploy key for Blueprint repository
-ssh-keygen -t ed25519 -f /var/lib/danube/keys/git_deploy_key -N '' -C "danube-blueprint"
-chmod 600 /var/lib/danube/keys/git_deploy_key
+sudo -u danube ssh-keygen -t ed25519 -f /var/lib/danube/keys/git_deploy_key -N '' -C "danube-blueprint"
+sudo chmod 600 /var/lib/danube/keys/git_deploy_key
 ```
 
 #### Step 5: Install Danube
 
 ```bash
-# Install UV if not already installed
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install Danube from PyPI (when published)
 uv tool install danube
+```
 
-# Or from source
-git clone https://github.com/yourusername/danube.git
+From source:
+
+```bash
+git clone https://github.com/yourorg/danube.git
 cd danube
 uv sync
 uv run danube --version
@@ -134,21 +113,19 @@ Create `/etc/danube/danube.toml`:
 url = "git@github.com:yourorg/danube-blueprint.git"
 branch = "main"
 sync_interval = "60s"
+ssh_key_path = "/var/lib/danube/keys/git_deploy_key"
 
 [server]
 bind_address = "0.0.0.0:8080"
+rpc_address = "127.0.0.1:9000"
 data_dir = "/var/lib/danube"
+
+[runner]
+type = "local"
+runtime = "podman"
 ```
 
-**Add deploy key to your Git repository**:
-```bash
-# Print public key
-cat /var/lib/danube/keys/git_deploy_key.pub
-
-# Add this to your Git repository's deploy keys (read-only access)
-```
-
-Optionally configure a webhook in the Blueprint repository to trigger immediate syncs on push (fallback polling still runs every `sync_interval`).
+Add `/var/lib/danube/keys/git_deploy_key.pub` to your Blueprint repository deploy keys.
 
 #### Step 7: Create Systemd Service
 
@@ -156,9 +133,8 @@ Create `/etc/systemd/system/danube.service`:
 
 ```ini
 [Unit]
-Description=Danube CI/CD Master
-After=network.target k3s.service
-Requires=k3s.service
+Description=Danube CI/CD Appliance
+After=network.target
 
 [Service]
 Type=simple
@@ -166,12 +142,10 @@ User=danube
 Group=danube
 WorkingDirectory=/var/lib/danube
 Environment="PATH=/home/danube/.local/bin:/usr/local/bin:/usr/bin:/bin"
-Environment="KUBECONFIG=/etc/rancher/k3s/k3s.yaml"
-ExecStart=/home/danube/.local/bin/uv run danube master
+ExecStart=/home/danube/.local/bin/danube master --config /etc/danube/danube.toml
 Restart=on-failure
 RestartSec=10s
 
-# Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -182,40 +156,29 @@ ReadWritePaths=/var/lib/danube
 WantedBy=multi-user.target
 ```
 
-#### Step 8: Create Danube User
-
-```bash
-sudo useradd -r -s /bin/bash -d /var/lib/danube -m danube
-sudo chown -R danube:danube /var/lib/danube
-sudo usermod -aG k3s danube  # Grant access to K3s kubeconfig
-```
-
-#### Step 9: Start Danube
+#### Step 8: Start Danube
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable danube
 sudo systemctl start danube
-
-# Check status
 sudo systemctl status danube
-
-# View logs
-sudo journalctl -u danube -f
 ```
 
 ## Post-Installation Setup
 
-### 1. Create Blueprint Repository
-
-Create a Git repository with initial configuration:
+### Create Blueprint Repository
 
 ```bash
 mkdir danube-blueprint
 cd danube-blueprint
+git init
+mkdir pipelines
+```
 
-# Create initial config
-cat > config.json <<EOF
+`config.json`:
+
+```json
 {
   "apiVersion": "danube.dev/v1",
   "kind": "Config",
@@ -224,20 +187,21 @@ cat > config.json <<EOF
     "retention": {
       "logs_days": 30,
       "artifacts_days": 14,
-      "registry_images_days": 30
+      "registry_images_days": 30,
+      "workspaces_days": 0
     },
-    "egress_allowlist": [
-      "registry.npmjs.org",
-      "pypi.org",
-      "github.com",
-      "registry.danube-system"
-    ]
+    "networking": {
+      "default_deny_egress": true,
+      "egress_proxy_enabled": true,
+      "egress_allowlist": ["github.com", "registry.npmjs.org", "pypi.org"]
+    }
   }
 }
-EOF
+```
 
-# Create initial user
-cat > users.json <<EOF
+`users.json`:
+
+```json
 [
   {
     "apiVersion": "danube.dev/v1",
@@ -245,14 +209,15 @@ cat > users.json <<EOF
     "metadata": {"name": "admin"},
     "spec": {
       "email": "admin@example.com",
-      "password_hash": "\$2b\$12\$KIXxKj5M..."
+      "password_hash": "$2b$12$KIXxKj5M..."
     }
   }
 ]
-EOF
+```
 
-# Create initial team
-cat > teams.json <<EOF
+`teams.json`:
+
+```json
 [
   {
     "apiVersion": "danube.dev/v1",
@@ -264,61 +229,48 @@ cat > teams.json <<EOF
     }
   }
 ]
-EOF
+```
 
-mkdir pipelines
+Commit and push:
 
-git init
+```bash
 git add .
 git commit -m "Initial Danube blueprint"
 git remote add origin git@github.com:yourorg/danube-blueprint.git
 git push -u origin main
 ```
 
-### 2. Verify Installation
+### Verify Installation
 
 ```bash
-# Check Danube is running
 curl http://localhost:8080/health
-
-# Check Kubernetes resources
-kubectl get pods -n danube-system
-kubectl get pods -n danube-jobs
-
-# Access UI
-open http://localhost:8080
+curl http://localhost:8080/health/ready
+sudo journalctl -u danube -f
 ```
 
-### 3. First Login
+Open:
 
-1. Open browser to `http://localhost:8080`
-2. Redirected to Dex login page
-3. Enter credentials from `users.json`
-4. Redirected back to Danube UI
+```text
+http://localhost:8080
+```
 
 ## Network Configuration
 
-### Firewall Rules
-
-Allow incoming connections on port 8080:
+Allow incoming HTTP if exposing directly:
 
 ```bash
-# UFW
 sudo ufw allow 8080/tcp
-
-# iptables
-sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
 ```
 
-### Reverse Proxy Setup (Optional but Recommended)
+Use a reverse proxy with TLS for production.
 
-#### Nginx
+### Nginx Example
 
 ```nginx
 server {
     listen 80;
     server_name danube.example.com;
-    
+
     location / {
         proxy_pass http://localhost:8080;
         proxy_set_header Host $host;
@@ -326,8 +278,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
-    
-    # SSE log streaming requires these headers
+
     location /api/v1/jobs/ {
         proxy_pass http://localhost:8080;
         proxy_set_header Connection '';
@@ -339,101 +290,44 @@ server {
 }
 ```
 
-#### Traefik
-
-```yaml
-# docker-compose.yml
-services:
-  traefik:
-    image: traefik:v2.10
-    command:
-      - --providers.docker=true
-      - --entrypoints.web.address=:80
-    ports:
-      - "80:80"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-
-  danube:
-    image: danube:latest
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.danube.rule=Host(`danube.example.com`)"
-      - "traefik.http.services.danube.loadbalancer.server.port=8080"
-```
-
 ## Troubleshooting
 
 ### Danube won't start
 
-**Check logs**:
 ```bash
 sudo journalctl -u danube -n 100 --no-pager
 ```
 
-**Common issues**:
-- K3s not running: `sudo systemctl status k3s`
-- Invalid config: Check `/etc/danube/danube.toml` syntax
-- Blueprint repo auth failed: Verify deploy key added to Git repo
-- Database locked: Check file permissions on `/var/lib/danube/danube.db`
+Common issues:
 
+- invalid `/etc/danube/danube.toml`
+- data directory permissions
+- Blueprint repo auth failure
+- rootless Podman unavailable
+- database locked
+
+### Runtime problems
+
+```bash
+sudo -u danube podman info
+```
+
+Check Podman rootless/API access for the `danube` user.
 
 ### Blueprint sync failing
 
 ```bash
-# Check Blueprint sync logs
-sudo journalctl -u danube | grep "blueprint_sync"
-
-# Manual sync
- danube blueprint sync --verbose
+sudo journalctl -u danube | grep blueprint_sync
+danube blueprint validate --repo /path/to/blueprint
 ```
-
-
-### Kubernetes pods not starting
-
-```bash
-# Check pod status
-kubectl get pods -n danube-jobs
-kubectl describe pod <pod-name> -n danube-jobs
-
-# Check events
-kubectl get events -n danube-jobs --sort-by='.lastTimestamp'
-```
-
-### Cilium issues
-
-```bash
-# Check Cilium status
-cilium status
-
-# Restart Cilium
-cilium restart
-
-# Check connectivity
-cilium connectivity test
-```
-
-## Upgrading
-
-See [Upgrades](./upgrades.md) for upgrade procedures.
 
 ## Uninstallation
 
 ```bash
-# Stop Danube
 sudo systemctl stop danube
 sudo systemctl disable danube
-
-# Remove Danube
 uv tool uninstall danube
-
-# Uninstall K3s
-/usr/local/bin/k3s-uninstall.sh
-
-# Remove data (CAUTION: Deletes all jobs, logs, artifacts)
 sudo rm -rf /var/lib/danube
-
-# Remove config
 sudo rm /etc/danube/danube.toml
 sudo rm /etc/systemd/system/danube.service
 ```
