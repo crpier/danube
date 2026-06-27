@@ -13,12 +13,12 @@ Danube is a self-hosted, single-host CI/CD appliance built in Python. It runs a 
 
 ## Repository layout
 
-- `backend/`: Python services, SDK, runner, API, and orchestration code
+- `danube/`: the importable `danube` package — Python services, SDK, runner, API, and orchestration code
 - `frontend/`: Web UI
 - `infra/`: Deployment artifacts for the appliance
 - `docs/`: Architecture and configuration documentation
 - `examples/`: Example blueprints and sample configurations
-- `tests/`: Cross-cutting tests
+- `tests/`: `unit/`, `integration/`, and `e2e/` suites (snektest)
 - `scripts/`: Repo-wide helper scripts
 - `tools/`: Local developer tools and utilities
 

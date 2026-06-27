@@ -19,24 +19,32 @@ uv run python --version
 
 ## Project Structure
 
+Flat root layout: the `danube` package lives at the repo root.
+
 ```text
 danube/
-├── backend/
-│   └── danube/
-│       ├── master.py
-│       ├── api/
-│       ├── orchestrator/
-│       ├── runner/
-│       ├── db/
-│       ├── blueprint/
-│       ├── security/
-│       └── sdk/
+├── danube/
+│   ├── __init__.py
+│   ├── master.py
+│   ├── api/
+│   ├── orchestrator/
+│   ├── runner/
+│   ├── db/
+│   ├── blueprint/
+│   ├── security/
+│   └── sdk/
 ├── frontend/
 ├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
 ├── docs/
 ├── pyproject.toml
 └── uv.lock
 ```
+
+Most of the package subdirectories above are placeholders for later issues; the
+bootstrap ships `__init__.py` and `master.py`.
 
 ## Local Configuration
 
@@ -165,27 +173,30 @@ Integration tests that create containers should be skipped unless rootless Podma
 
 ## Code Quality
 
+Run from the repo root:
+
 ```bash
-uv run pyright backend/danube
-uv run ruff check backend/danube
-uv run ruff format backend/danube
+uv run ruff check .
+uv run ruff format --check .
+uv run pyright
 ```
 
 ## Testing
 
 ```bash
-uv run snektest
-uv run snektest tests/unit/
-uv run snektest tests/integration/
+uv run python -m snektest tests/
+uv run python -m snektest tests/unit/
+uv run python -m snektest tests/integration/
 ```
 
-See [Testing Guide](./testing.md).
+There is no CI yet; this gate is run manually until Danube can run its own
+pipelines. See [Testing Guide](./testing.md).
 
 ## Common Development Tasks
 
 ### Add API Endpoint
 
-1. Define route in `backend/danube/api/`.
+1. Define route in `danube/api/`.
 2. Add Pydantic models.
 3. Add handler tests.
 4. Update architecture/config docs if behavior changes.

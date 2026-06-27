@@ -47,6 +47,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
   "ARG001",  # Allow unused function arguments. Stub route handlers in tests take Starlette request/body params they sometimes ignore.
+  "INP001",  # Test directories are namespace packages by snektest design; no `__init__.py`.
   "FBT003",  # Allow boolean positional values in function calls. This is useful for assert_* function.
   "N802",    # Don't force function names to be snake_case. Useful e.g. when writing tests for classes.
   "N999",    # Don't force module names to be snake_case. Useful e.g. when writing tests for classes.
