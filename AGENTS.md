@@ -42,7 +42,7 @@ Danube is a self-hosted, single-host CI/CD appliance built in Python. It runs a 
 
 ### Validation gate (keep `main` clean)
 
-- `main` must always pass every check. Once backend code exists, never commit, push, open, or merge a PR until all of the checks below pass clean from the backend package dir:
+- `main` must always pass every check. Never commit, push, open, or merge a PR until all of the checks below pass clean from the repo root:
   - `uv run pyright` — 0 errors.
   - `uv run ruff check .` — all checks passed.
   - `uv run ruff format --check .` — no files would be reformatted.
