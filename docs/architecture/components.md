@@ -188,7 +188,7 @@ Danube may run an embedded identity provider or integrate with an existing OIDC 
 
 **Schema**: See [Data Model](./data-model.md).
 
-**Access**: `aiosqlite` with direct SQL queries or a small query layer.
+**Access**: `snekql` (async typed query builder/runtime over the `aiosqlite` backend extra). Tables are declared as `snekql` `Model` classes; no raw-SQL data access or ORM layer.
 
 ## Job Containers
 
@@ -239,7 +239,7 @@ Danube may run an embedded identity provider or integrate with an existing OIDC 
 | HTTP Framework | FastAPI + Uvicorn |
 | Async Runtime | asyncio |
 | Container Runner | Rootless Podman via Podman API |
-| Database | SQLite + aiosqlite |
+| Database | SQLite via snekql (aiosqlite backend) |
 | Git Client | GitPython or equivalent |
 | Validation | Pydantic v2 + JSON Schema |
 | Encryption | cryptography |

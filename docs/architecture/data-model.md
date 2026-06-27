@@ -220,11 +220,34 @@ Back up `/var/lib/danube/keys/` securely. Without `encryption.key`, stored secre
 
 ## Migrations
 
-Database migrations are SQL files applied through the project migration tool.
+Schema is owned by `snekql`. Tables are declared as `snekql` `Model` classes
+(see the SQLite schema above for the canonical shape), and the live schema is
+built by applying an ordered set of migrations, then verified against the
+models.
 
-```bash
-uv run alembic upgrade head
-uv run alembic downgrade -1
+```python
+from snekql.sqlite import Database, scaffold
+
+async with await Database.initialize(sqlite.Config(database=db_path)) as db:
+    # Migrations are an ordered dict[str, str] of name -> raw SQL body, each
+    # applied exactly once and recorded in snekql's Migration History. A fresh
+    # database is built by replaying the whole chain. `scaffold([...])` emits the
+    # initial CREATE TABLE DDL from the models so it is not hand-written.
+    await db.migrate(
+        {
+            "0001_init": scaffold([User, Team, Pipeline, Job, Step, ...]),
+            # "0002_...": 'ALTER TABLE "job" ADD COLUMN ...',
+        },
+    )
+    # Structural check between models and the live schema; raises on drift.
+    await db.verify([User, Team, Pipeline, Job, Step, ...], policy="strict")
 ```
 
-Migrations are stored under the backend database migration package.
+- Migration deploys run `initialize -> migrate -> verify`.
+- Read-only replicas / app startup that assumes an already-migrated schema run
+  `initialize -> verify`.
+- `verify` compares columns, indexes, foreign keys, and storage options; it
+  cannot see default values, `CHECK` constraints, triggers, or data. Constraints
+  that `verify` cannot inspect must be asserted by tests.
+- Migration bodies live under the backend database package as the canonical
+  ordered migration set passed to `db.migrate`.
