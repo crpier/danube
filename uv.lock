@@ -89,6 +89,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "snekql", extra = ["aiosqlite"] },
     { name = "uvicorn", extra = ["standard"] },
@@ -97,7 +98,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "asgi-lifespan" },
-    { name = "httpx" },
     { name = "pyright" },
     { name = "ruff" },
     { name = "snektest" },
@@ -106,6 +106,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.138.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "snekql", extras = ["aiosqlite"], editable = "../snekql" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.49.0" },
@@ -114,7 +115,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "asgi-lifespan", specifier = ">=2.1.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "ruff", specifier = ">=0.15.20" },
     { name = "snektest", editable = "../snektest" },

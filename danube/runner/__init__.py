@@ -6,10 +6,13 @@ the execution backend (Podman, or the in-memory `FakeRunner`) behind it.
 
 from danube.runner.base import Runner
 from danube.runner.fake import FakeRunner, JobNotActiveError, RecordedCall
+from danube.runner.local import LocalContainerRunner, pod_name
 
 __all__ = [
     "FakeRunner",
     "JobNotActiveError",
+    "LocalContainerRunner",
     "RecordedCall",
     "Runner",
+    "pod_name",
 ]
