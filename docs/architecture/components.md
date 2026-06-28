@@ -16,12 +16,12 @@
 - `POST /api/v1/jobs/{id}/cancel` - Request cancellation of a `running` job (unknown → 404; not running → 409)
 - `GET /api/v1/jobs/{id}/logs/stream` - Server-Sent Events log stream: replays the existing log file, then tails new lines until the job is terminal, closing with an `event: end` frame
 - `/api/v1/artifacts` - Artifact download
-- `/webhooks/github`, `/webhooks/gitlab` - Git webhook ingestion
+- `POST /webhooks/github`, `POST /webhooks/gitlab` - Git webhook ingestion: verify the provider signature/token, parse push/PR events, resolve matching pipeline(s), and enqueue runs through the shared `JobManager` trigger path with `TriggerType.WEBHOOK` and a `branch/sha` `trigger_ref`. A failed signature/token is rejected `401` and enqueues nothing; a payload malformed for its event type is `400`; a valid event matching no pipeline (or an event type Danube ignores, e.g. a ping or tag push) is a clean `200` no-op. Webhook triggers dedup against concurrent triggers via the same path.
 - `/health`, `/health/ready` - Health checks
 - `/metrics` - Prometheus metrics
 - `/` - Frontend SPA
 
-The control-plane routes (`run`, `cancel`, `logs/stream`) are mounted only when the app is constructed with a `JobManager`; the read-only app omits them.
+The control-plane routes (`run`, `cancel`, `logs/stream`) are mounted only when the app is constructed with a `JobManager`; the read-only app omits them. The webhook routes are mounted only when the app additionally receives a `WebhookConfig` carrying the per-provider secrets (GitHub HMAC secret, GitLab token); a provider whose secret is unset rejects every request.
 
 ### Internal RPC Control Plane
 
