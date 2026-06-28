@@ -8,6 +8,7 @@ fail a cleanup once and succeed on the retry, mirroring a cleanup that failed
 during job teardown and is reattempted on the next pass.
 """
 
+import logging
 import os
 import shutil
 import tempfile
@@ -359,6 +360,40 @@ async def test_image_pruner_called_with_cutoff() -> None:
 
     assert_eq(pruner.cutoffs, [NOW - timedelta(days=30)])
     assert_eq(report.images_deleted, 2)
+
+
+@test(mark="medium")
+async def test_pass_emits_cleanup_metric_signals() -> None:
+    db = await load_fixture(memory_db())
+    data = load_fixture(data_dir())
+    runner = _StubRunner(
+        ReconcileReport(stale_pods=[pod_name("flaky")]), fail_jobs={"flaky"}
+    )
+    reaper = _make_reaper(db, data, runner=runner)
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger = logging.getLogger("danube.reaper")
+    logger.addHandler(handler)
+    previous_level = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        _ = await reaper.run_once(NOW)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+
+    # The cumulative-failure counter and current backlog are emitted as a
+    # structured log `extra` so a metrics exporter can scrape them, matching the
+    # `*_total` convention the blueprint syncer uses.
+    emitted = [
+        record.__dict__
+        for record in records
+        if "danube_runner_cleanup_failures_total" in record.__dict__
+    ]
+    assert_eq(len(emitted), 1)
+    assert_eq(emitted[0]["danube_runner_cleanup_failures_total"], 1)
+    assert_eq(emitted[0]["cleanup_backlog"], 1)
 
 
 @test(mark="fast")

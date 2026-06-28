@@ -31,6 +31,7 @@ pass is deterministic under test; a background task drives it on the interval.
 
 from __future__ import annotations
 
+import enum
 import logging
 import shutil
 from collections.abc import Callable
@@ -247,7 +248,7 @@ class Reaper:
 
         self._cleanup_failures_total += cleanup.failed
         self._cleanup_backlog = cleanup.backlog
-        return ReaperReport(
+        report = ReaperReport(
             logs_deleted=logs,
             artifacts_deleted=artifacts,
             workspaces_deleted=workspaces,
@@ -256,6 +257,18 @@ class Reaper:
             cleanups_failed=cleanup.failed,
             cleanup_backlog=cleanup.backlog,
         )
+        # Emit the cumulative cleanup-failure counter and current backlog as a
+        # structured-log `extra` so a metrics exporter can scrape them, matching
+        # the `*_total` convention used elsewhere (`blueprint/syncer.py`).
+        logger.info(
+            "reaper pass complete: %s",
+            report,
+            extra={
+                "danube_runner_cleanup_failures_total": self._cleanup_failures_total,
+                "cleanup_backlog": self._cleanup_backlog,
+            },
+        )
+        return report
 
     async def _reap_images(self, now: datetime) -> int:
         days = self._retention.registry_images_days
@@ -322,7 +335,7 @@ class Reaper:
         return deleted
 
     def _sweep_dirs(
-        self, root: Path, cutoff: datetime | None | object, active: frozenset[str]
+        self, root: Path, cutoff: datetime | None | _Disabled, active: frozenset[str]
     ) -> int:
         if cutoff is _DISABLED:
             return 0
@@ -344,25 +357,27 @@ class Reaper:
         self,
         job_id: str,
         path: Path,
-        cutoff: datetime | None | object,
+        cutoff: datetime | None,
         active: frozenset[str],
     ) -> bool:
-        """Whether `path` must be preserved this pass (never deleted)."""
+        """Whether `path` must be preserved this pass (never deleted).
+
+        Callers filter out `_DISABLED` before reaching here, so `cutoff` is either
+        a real threshold or `None` (delete regardless of age, workspaces_days == 0).
+        """
         if job_id in active or self._is_preserved(job_id):
             return True
-        # `cutoff is None` means "delete regardless of age" (workspaces_days == 0).
         if cutoff is None:
             return False
-        assert isinstance(cutoff, datetime)
         return _mtime(path) >= cutoff
 
-    def _cutoff(self, now: datetime, days: int) -> datetime | object:
+    def _cutoff(self, now: datetime, days: int) -> datetime | _Disabled:
         """A datetime threshold for `days`, or `_DISABLED` for `days <= 0`."""
         if days <= 0:
             return _DISABLED
         return now - timedelta(days=days)
 
-    def _workspaces_cutoff(self, now: datetime) -> datetime | None | object:
+    def _workspaces_cutoff(self, now: datetime) -> datetime | None | _Disabled:
         days = self._retention.workspaces_days
         if days == 0:
             # "Delete on job end": any non-active workspace, regardless of age.
@@ -382,9 +397,19 @@ class Reaper:
         return frozenset(rows)
 
 
-# Sentinel distinguishing "category disabled" from a real cutoff or the
-# delete-everything `None`; an object identity, never equal to a datetime.
-_DISABLED = object()
+class _Disabled(enum.Enum):
+    """Sentinel for a disabled retention category (negative/zero `*_days`).
+
+    A single-member enum so the type checker can narrow it out of a cutoff union
+    on an identity check (`cutoff is _DISABLED`) without a runtime `assert`, while
+    staying distinct from a real `datetime` cutoff and the delete-everything
+    `None`.
+    """
+
+    TOKEN = enum.auto()
+
+
+_DISABLED = _Disabled.TOKEN
 
 
 def _cleanup_targets(report: ReconcileReport) -> frozenset[str]:
