@@ -31,6 +31,17 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.CANCELLED: frozenset(),
 }
 
+# States from which no transition is allowed: a job here is finished and its
+# runtime resources should no longer exist. Derived from the transition table so
+# it cannot drift from it.
+TERMINAL_STATES: frozenset[JobStatus] = frozenset(
+    state for state, allowed in ALLOWED_TRANSITIONS.items() if not allowed
+)
+
+# States in which a job still owns (or is acquiring) runtime resources: a pod and
+# workspace are expected to exist. Everything that is neither terminal.
+ACTIVE_STATES: frozenset[JobStatus] = frozenset(ALLOWED_TRANSITIONS) - TERMINAL_STATES
+
 
 # Issue #4 mandates the public name `InvalidTransition`; the N818 `Error` suffix
 # convention is waived (below) to honour that named contract.

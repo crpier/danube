@@ -175,3 +175,45 @@ The first runner development slice should prove:
 8. inspect/reconcile labeled resources
 
 Egress enforcement should be prototyped before building higher-level product features.
+
+## Implementation Notes
+
+The first spike is implemented as:
+
+- `danube/runner/podman/adapter.py` — `PodmanAdapter`, a thin async wrapper over
+  the libpod HTTP API spoken over the rootless Unix socket with `httpx`. It is
+  the only module that knows Podman wire formats. Callers depend on the
+  `PodmanAPI` protocol and the small Danube spec/result dataclasses
+  (`PodSpec`, `ContainerSpec`, `ExecSpec`, `ResourceSummary`, ...), so the runner
+  and its unit tests never touch Podman concepts directly.
+- `danube/runner/local.py` — `LocalContainerRunner`, the `Runner` implementation.
+
+### Default-deny egress
+
+The job pod is attached to a dedicated **internal** Podman network
+(`danube-egress`, created on demand via `ensure_network(internal=True)`). An
+internal network has no route to the internet, so direct egress from the Worker
+is denied by default. Allowlisted egress through a proxy is a later issue; the
+integration test asserts a direct outbound connection from the Worker fails.
+
+### Tracked state (`runner_state`)
+
+On `start_job` the runner records one `runner_state` row per created resource
+when a database is configured:
+
+- `kind` is `pod`, `worker`, or `coordinator` (mirrors the
+  `io.danube.resource` label).
+- `external_id` is the Podman id of the pod/container.
+- `status` is `running`; a failed `cleanup_job` instead writes a row with status
+  `cleanup_failed` so reconciliation can surface it.
+
+`cleanup_job` deletes the job's `runner_state` rows after removing the pod.
+
+### Reconciliation and the CLI
+
+`reconcile()` compares `runner_state`/`jobs` against the live resources labelled
+`io.danube.managed=true` and reports: pods for finished jobs (`stale_pods`),
+containers with no tracked state (`orphaned_containers`), workspaces for inactive
+jobs (`stale_workspaces`), active jobs with no pod (`missing_pods`), and
+`cleanup_failed` rows (`failed_cleanups`). The operator command
+`danube runner reconcile` prints this report.
