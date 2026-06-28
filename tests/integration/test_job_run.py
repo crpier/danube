@@ -99,6 +99,10 @@ async def _seed_pipeline(db: Database, max_duration_seconds: int = 3600) -> None
 async def _make_harness(max_duration_seconds: int = 3600) -> AsyncGenerator[Harness]:
     data_dir = Path(tempfile.mkdtemp(prefix="danube-jobrun-"))
     db = await open_database(":memory:")
+    # Bootstrap-then-assign: the orchestrator needs `harness` (its `program`
+    # closure reads `harness.http`/`harness.pipeline`), so the field is seeded
+    # `None` here and assigned below once the http client exists. The ignore is
+    # the test-only cost of that cycle, not a production typing relaxation.
     harness = Harness(db=db, runner=FakeRunner(), orchestrator=None, data_dir=data_dir)  # type: ignore[arg-type]
 
     async def program(env: Mapping[str, str]) -> int:

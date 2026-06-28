@@ -42,7 +42,7 @@ from snektest import assert_eq, fixture, load_fixture, test
 import danube
 from danube.api import create_app
 from danube.db import open_database
-from danube.db.models import Pipeline, Step, Team
+from danube.db.models import Job, Pipeline, Step, Team
 from danube.domain.enums import JobStatus, StepStatus, TriggerType
 from danube.orchestrator import JobOrchestrator
 from danube.rpc import ControlPlane
@@ -64,6 +64,17 @@ SITE_PACKAGES = Path(httpx.__file__).resolve().parent.parent
 DANUBEFILE = """
 async def pipeline(danube):
     await danube.step.run("echo one", name="one")
+    await danube.step.run("echo two", name="two")
+    await danube.status.report("success")
+"""
+
+# First step exits non-zero with the default check=True, so `step.run` raises in
+# the Coordinator: the pipeline aborts before the second step and the Coordinator
+# reports failure. Proves a failing step ends the job `failure` and skips later
+# steps in a real Worker, not just under the FakeRunner.
+FAILING_DANUBEFILE = """
+async def pipeline(danube):
+    await danube.step.run("false", name="one")
     await danube.step.run("echo two", name="two")
     await danube.status.report("success")
 """
@@ -108,74 +119,100 @@ if socket_available():
     @test(mark="slow")
     async def test_job_runs_to_success_over_podman() -> None:
         client = await load_fixture(podman_client())
-        adapter = PodmanAdapter(client)
-        # A non-internal control network so the Coordinator can reach the Master;
-        # the runner's own `ensure_network` is idempotent and leaves this as-is.
-        await adapter.ensure_network(
-            CONTROL_NETWORK, internal=False, labels={"io.danube.managed": "true"}
-        )
+        job, steps, logged = await _run_danubefile(client, DANUBEFILE)
 
-        data_dir = Path(tempfile.mkdtemp(prefix="danube-e2e-"))
-        db = await open_database(":memory:")
-        port = _free_port()
-        rpc_address = f"http://host.containers.internal:{port}"
-        config = LocalRunnerConfig(
-            coordinator_image=COORDINATOR_IMAGE,
-            egress_network=CONTROL_NETWORK,
-            coordinator_env={"PYTHONPATH": "/opt/site-packages:/opt/repo"},
-            coordinator_mounts=(
-                Mount(
-                    source=str(SITE_PACKAGES),
-                    destination="/opt/site-packages",
-                    read_only=True,
-                ),
-                Mount(source=str(REPO_ROOT), destination="/opt/repo", read_only=True),
+        assert_eq(job.status, JobStatus.SUCCESS)
+        assert_eq([s.name for s in steps], ["one", "two"])
+        assert_eq(
+            [s.status for s in steps],
+            [StepStatus.SUCCESS, StepStatus.SUCCESS],
+        )
+        assert "one" in logged
+        assert "two" in logged
+
+    @test(mark="slow")
+    async def test_failing_step_fails_job_over_podman() -> None:
+        client = await load_fixture(podman_client())
+        job, steps, _ = await _run_danubefile(client, FAILING_DANUBEFILE)
+
+        assert_eq(job.status, JobStatus.FAILURE)
+        # The failing first step aborted the pipeline; the second never ran.
+        assert_eq([s.name for s in steps], ["one"])
+        assert_eq(steps[0].status, StepStatus.FAILURE)
+
+
+async def _run_danubefile(
+    client: httpx.AsyncClient, danubefile: str
+) -> tuple[Job[Fetched], list[Step[Fetched]], str]:
+    """Run ``danubefile`` to completion over real Podman and return the results.
+
+    Wires the production-shaped stack (real ASGI app, RPC control plane, runner,
+    and a uvicorn server reachable from the pod over the control network), runs a
+    single job whose workspace holds ``danubefile``, and returns the terminal job
+    row, its recorded steps, and the on-disk log text.
+    """
+    adapter = PodmanAdapter(client)
+    # A non-internal control network so the Coordinator can reach the Master;
+    # the runner's own `ensure_network` is idempotent and leaves this as-is.
+    await adapter.ensure_network(
+        CONTROL_NETWORK, internal=False, labels={"io.danube.managed": "true"}
+    )
+
+    data_dir = Path(tempfile.mkdtemp(prefix="danube-e2e-"))
+    db = await open_database(":memory:")
+    port = _free_port()
+    rpc_address = f"http://host.containers.internal:{port}"
+    config = LocalRunnerConfig(
+        coordinator_image=COORDINATOR_IMAGE,
+        egress_network=CONTROL_NETWORK,
+        coordinator_env={"PYTHONPATH": "/opt/site-packages:/opt/repo"},
+        coordinator_mounts=(
+            Mount(
+                source=str(SITE_PACKAGES),
+                destination="/opt/site-packages",
+                read_only=True,
             ),
-        )
-        runner = LocalContainerRunner(adapter, data_dir, db=db, config=config)
-        control_plane = ControlPlane(runner, db, data_dir)
-        app = create_app(db, control_plane=control_plane)
-        orchestrator = JobOrchestrator(
-            runner, db, data_dir, control_plane, rpc_address=rpc_address
-        )
-        server = uvicorn.Server(
-            # Reachable from the job pod over the control network, not just
-            # loopback.
-            uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")  # noqa: S104
-        )
+            Mount(source=str(REPO_ROOT), destination="/opt/repo", read_only=True),
+        ),
+    )
+    runner = LocalContainerRunner(adapter, data_dir, db=db, config=config)
+    control_plane = ControlPlane(runner, db, data_dir)
+    app = create_app(db, control_plane=control_plane)
+    orchestrator = JobOrchestrator(
+        runner, db, data_dir, control_plane, rpc_address=rpc_address
+    )
+    server = uvicorn.Server(
+        # Reachable from the job pod over the control network, not just loopback.
+        uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")  # noqa: S104
+    )
 
-        try:
-            pipeline_id = await _seed(db)
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(server.serve)
-                await _wait_until_serving(server)
+    result: tuple[Job[Fetched], list[Step[Fetched]], str] | None = None
+    try:
+        pipeline_id = await _seed(db)
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(server.serve)
+            await _wait_until_serving(server)
 
-                created = await orchestrator.create_job(pipeline_id, TriggerType.MANUAL)
-                # Deliver the danubefile into the job workspace the runner mounts
-                # at /workspace in both containers.
-                workspace = data_dir / "workspaces" / created.id
-                await anyio.Path(workspace).mkdir(parents=True, exist_ok=True)
-                _ = await anyio.Path(workspace / "danubefile.py").write_text(DANUBEFILE)
+            created = await orchestrator.create_job(pipeline_id, TriggerType.MANUAL)
+            # Deliver the danubefile into the job workspace the runner mounts at
+            # /workspace in both containers.
+            workspace = data_dir / "workspaces" / created.id
+            await anyio.Path(workspace).mkdir(parents=True, exist_ok=True)
+            _ = await anyio.Path(workspace / "danubefile.py").write_text(danubefile)
 
-                job = await orchestrator.run_job(created.id)
+            job = await orchestrator.run_job(created.id)
+            steps = await _steps(db, created.id)
+            logged = await anyio.Path(
+                data_dir / "logs" / f"{created.id}.log"
+            ).read_text()
+            result = (job, steps, logged)
 
-                assert_eq(job.status, JobStatus.SUCCESS)
-                steps = await _steps(db, created.id)
-                assert_eq([s.name for s in steps], ["one", "two"])
-                assert_eq(
-                    [s.status for s in steps],
-                    [StepStatus.SUCCESS, StepStatus.SUCCESS],
-                )
-                logged = await anyio.Path(
-                    data_dir / "logs" / f"{created.id}.log"
-                ).read_text()
-                assert "one" in logged
-                assert "two" in logged
-
-                server.should_exit = True
-        finally:
-            await db.close()
-            shutil.rmtree(data_dir, ignore_errors=True)
+            server.should_exit = True
+    finally:
+        await db.close()
+        shutil.rmtree(data_dir, ignore_errors=True)
+    assert result is not None  # the run completed without raising past here
+    return result
 
 
 async def _wait_until_serving(server: uvicorn.Server) -> None:
