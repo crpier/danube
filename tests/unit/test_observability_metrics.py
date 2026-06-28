@@ -28,21 +28,33 @@ def _series(text: str) -> dict[str, float]:
 
 
 @test(mark="fast")
-def test_unlabelled_counter_starts_at_zero_and_increments() -> None:
+def test_unlabelled_counter_starts_at_zero() -> None:
+    registry = Registry()
+    _ = registry.counter("danube_things_total", "things")
+
+    assert_eq(_series(registry.render())["danube_things_total"], 0.0)
+
+
+@test(mark="fast")
+def test_unlabelled_counter_increments() -> None:
     registry = Registry()
     counter = registry.counter("danube_things_total", "things")
 
-    assert_eq(_series(registry.render())["danube_things_total"], 0.0)
     counter.inc()
     counter.inc(2.0)
     assert_eq(_series(registry.render())["danube_things_total"], 3.0)
 
 
 @test(mark="fast")
-def test_counter_rejects_negative_and_unknown_labels() -> None:
+def test_counter_rejects_unknown_labels() -> None:
     counter = Counter("c", "c", ("status",))
     with assert_raises(MetricError):
         counter.inc(status="ok", extra="no")
+
+
+@test(mark="fast")
+def test_counter_rejects_negative_increment() -> None:
+    counter = Counter("c", "c", ("status",))
     with assert_raises(MetricError):
         counter.inc(-1.0, status="ok")
 
@@ -61,12 +73,17 @@ def test_labelled_counter_renders_one_series_per_label_set() -> None:
 
 
 @test(mark="fast")
-def test_gauge_inc_dec_set() -> None:
+def test_gauge_inc_dec() -> None:
     gauge = Gauge("g", "g")
     gauge.inc()
     gauge.inc()
     gauge.dec()
     assert_eq(gauge.value(), 1.0)
+
+
+@test(mark="fast")
+def test_gauge_set() -> None:
+    gauge = Gauge("g", "g")
     gauge.set(5.0)
     assert_eq(gauge.value(), 5.0)
 

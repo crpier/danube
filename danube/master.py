@@ -59,9 +59,9 @@ def load_config(config_path: Path | None) -> MasterConfig:
 
 
 def _split_bind_address(bind_address: str) -> tuple[str, int]:
-    """Split a ``host:port`` bind address into its parts.
+    """Split a `host:port` bind address into its parts.
 
-    Raises ``ValueError`` if the port is missing or not an integer.
+    Raises `ValueError` if the port is missing or not an integer.
     """
     host, separator, port = bind_address.rpartition(":")
     if not separator:
@@ -81,7 +81,15 @@ async def build_app(config: MasterConfig) -> tuple[FastAPI, Database]:
         enabled=config.observability.traces_enabled,
         endpoint=config.observability.otel_endpoint,
     )
-    return create_app(db, metrics=Metrics(), tracer=tracer), db
+    return (
+        create_app(
+            db,
+            metrics=Metrics(),
+            tracer=tracer,
+            metrics_enabled=config.observability.metrics_enabled,
+        ),
+        db,
+    )
 
 
 async def serve(config: MasterConfig) -> None:
@@ -90,7 +98,10 @@ async def serve(config: MasterConfig) -> None:
     app, db = await build_app(config)
     try:
         server = uvicorn.Server(uvicorn.Config(app, host=host, port=port))
-        logger.info("Serving Danube Master API on %s", config.bind_address)
+        logger.info(
+            "master_serving",
+            extra={"event": "master_serving", "bind_address": config.bind_address},
+        )
         await server.serve()
     finally:
         await db.close()
@@ -119,11 +130,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging()
     config = load_config(args.config)
-    logger.info("Danube Master %s starting", __version__)
+    logger.info(
+        "master_starting", extra={"event": "master_starting", "version": __version__}
+    )
     if config.config_path is None:
-        logger.info("No config file provided; using defaults")
+        logger.info(
+            "master_no_config_file",
+            extra={"event": "master_no_config_file"},
+        )
     else:
-        logger.info("Loaded config from %s", config.config_path)
+        logger.info(
+            "master_config_loaded",
+            extra={
+                "event": "master_config_loaded",
+                "config_path": str(config.config_path),
+            },
+        )
     anyio.run(serve, config)
     return 0
 

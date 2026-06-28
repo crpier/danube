@@ -28,6 +28,8 @@ def _env_flag(name: str, *, default: bool) -> bool:
 class ObservabilityConfig:
     """Toggles for the metrics endpoint, OTLP export, and tracing."""
 
+    # Grouped by subsystem (metrics, then traces) rather than alphabetically: the
+    # two enable flags read together, with the shared OTLP endpoint last.
     metrics_enabled: bool = True
     traces_enabled: bool = False
     otel_endpoint: str | None = None

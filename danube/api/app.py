@@ -107,6 +107,7 @@ def create_app(  # noqa: PLR0913 - factory wiring each optional subsystem explic
     metrics: Metrics | None = None,
     tracer: Tracer | None = None,
     runner: Runner | None = None,
+    metrics_enabled: bool = True,
 ) -> FastAPI:
     """Build the FastAPI app, injecting `db` as the request-scoped database.
 
@@ -116,6 +117,9 @@ def create_app(  # noqa: PLR0913 - factory wiring each optional subsystem explic
     way; without it the app is read-only. Passing `webhook_config` alongside a
     `job_manager` mounts the `/webhooks/*` ingestion routes; webhook triggers go
     through the same `JobManager`, so they share its dedup and concurrency cap.
+
+    `metrics_enabled` (from `spec.observability`) gates the `/metrics` endpoint:
+    when false the route is not mounted, so scrapes get a 404.
     """
     app = FastAPI(title="Danube Master API", version=__version__)
 
@@ -126,7 +130,8 @@ def create_app(  # noqa: PLR0913 - factory wiring each optional subsystem explic
     _wire_observability(app, metrics or Metrics(), tracer or Tracer(), runner)
 
     app.include_router(health.router)
-    app.include_router(metrics_route.router)
+    if metrics_enabled:
+        app.include_router(metrics_route.router)
     app.include_router(jobs.router, prefix=API_V1_PREFIX)
     app.include_router(pipelines.router, prefix=API_V1_PREFIX)
     app.include_router(artifacts.router, prefix=API_V1_PREFIX)

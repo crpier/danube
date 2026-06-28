@@ -69,7 +69,7 @@ async def _seed_pipeline(db: Database) -> None:
 
 
 @asynccontextmanager
-async def _make_harness() -> AsyncGenerator[Harness]:
+async def _make_harness(tracer: Tracer | None = None) -> AsyncGenerator[Harness]:
     data_dir = Path(tempfile.mkdtemp(prefix="danube-obs-"))
     db = await open_database(":memory:")
     metrics = Metrics()
@@ -87,6 +87,7 @@ async def _make_harness() -> AsyncGenerator[Harness]:
         db,
         data_dir,
         secret_service=SecretService(db, SecretCipher(generate_key())),
+        tracer=tracer or Tracer(),
     )
     app = create_app(db, control_plane=control_plane, metrics=metrics, runner=runner)
     transport = httpx.ASGITransport(app=app)
@@ -219,6 +220,49 @@ async def test_ready_503_when_container_runtime_unhealthy() -> None:
         assert_eq(response.json()["checks"]["container_runtime"], "error")
     finally:
         await db.close()
+
+
+@test(mark="medium")
+async def test_metrics_disabled_does_not_mount_endpoint() -> None:
+    db = await open_database(":memory:")
+    try:
+        app = create_app(db, metrics_enabled=False)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://master"
+        ) as http:
+            response = await http.get("/metrics")
+        assert_eq(response.status_code, 404)
+    finally:
+        await db.close()
+
+
+@test(mark="medium")
+async def test_job_run_emits_per_step_spans() -> None:
+    captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(self.format(record))
+
+    handler = _Capture()
+    handler.setFormatter(JsonLogFormatter())
+    logger = logging.getLogger("danube.tracing")
+    logger.addHandler(handler)
+    previous_level = logger.level
+    logger.setLevel(logging.DEBUG)
+    try:
+        async with _make_harness(tracer=Tracer(enabled=True)) as h:
+            h.pipeline = one_step_pipeline
+            created = await h.orchestrator.create_job("p1", TriggerType.MANUAL)
+            _ = await h.orchestrator.run_job(created.id)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+
+    spans = {json.loads(line)["span"] for line in captured}
+    assert "execute step 1" in spans, spans
+    assert "runner exec" in spans, spans
 
 
 @test(mark="medium")

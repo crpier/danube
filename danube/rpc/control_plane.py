@@ -35,6 +35,7 @@ from danube.db.models import Artifact, Job, Step
 from danube.domain.enums import JobStatus, StepStatus
 from danube.domain.lifecycle import transition
 from danube.domain.runner_types import ExecStepRequest, JobHandle
+from danube.observability import Tracer
 from danube.orchestrator.log_writer import LogWriter
 from danube.rpc.schemas import (
     ReportStatusResponse,
@@ -133,6 +134,7 @@ class ControlPlane:
         data_dir: Path | str,
         *,
         secret_service: SecretService,
+        tracer: Tracer | None = None,
     ) -> None:
         self._runner = runner
         self._db = db
@@ -142,6 +144,9 @@ class ControlPlane:
         # ciphertext as if it were the secret value.
         self._secrets = secret_service
         self._sessions: dict[str, JobSession] = {}
+        # No-op unless tracing is enabled; lets `run_step` span the per-step RPC
+        # and Worker exec (`docs/architecture/observability.md`, Job Execution).
+        self._tracer = tracer or Tracer()
 
     async def open_session(
         self,
@@ -189,19 +194,22 @@ class ControlPlane:
         sequence = session.next_sequence()
         step_id = str(uuid.uuid4())
         name = request.name or f"step-{sequence}"
-        # Scrub the command too: a secret inlined in the command string must not be
-        # persisted verbatim to the step record (Secrets Access, execution-model.md).
-        logged_command = scrub_secrets(request.command, secret_values)
-        await self._begin_step(step_id, job_id, sequence, name, logged_command)
+        with self._tracer.span(f"execute step {sequence}", job_id=job_id, step=name):
+            # Scrub the command too: a secret inlined in the command string must not
+            # be persisted verbatim to the step record (Secrets Access,
+            # execution-model.md).
+            logged_command = scrub_secrets(request.command, secret_values)
+            await self._begin_step(step_id, job_id, sequence, name, logged_command)
 
-        result = await self._runner.exec_step(
-            session.handle,
-            ExecStepRequest(command=request.command, env=request.env),
-        )
-        combined = result.stdout + result.stderr
-        scrubbed = scrub_secrets(combined, secret_values)
-        start, end = await session.log.write(scrubbed)
-        await self._finish_step(step_id, result.exit_code, start, end)
+            with self._tracer.span("runner exec", job_id=job_id, step=name):
+                result = await self._runner.exec_step(
+                    session.handle,
+                    ExecStepRequest(command=request.command, env=request.env),
+                )
+            combined = result.stdout + result.stderr
+            scrubbed = scrub_secrets(combined, secret_values)
+            start, end = await session.log.write(scrubbed)
+            await self._finish_step(step_id, result.exit_code, start, end)
 
         return RunStepResponse(
             exit_code=result.exit_code,

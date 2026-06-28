@@ -10,7 +10,10 @@ project's dependency-free, strictly-typed tooling (snekql, snektest):
   series in the Prometheus text exposition format (version 0.0.4) at `GET
   /metrics`. The registry is dependency-injected, so the orchestrator records into
   the same registry the endpoint renders. Series without instrumentation points
-  yet (e.g. the DB metrics) are exposed at their zero value.
+  yet (e.g. the DB metrics) are exposed at their zero value. `metrics_enabled`
+  gates the endpoint: when false, `/metrics` is not mounted and scrapes get a 404.
+  The push-based **OTLP exporter** (gated by `metrics_enabled` + `otel_endpoint`)
+  is not implemented yet; `/metrics` scraping is the only export today.
 - **Tracing**: `Tracer.span` models an OpenTelemetry span (name + attributes +
   duration), gated by `observability.traces_enabled`. It is a true no-op when
   disabled; when enabled it emits spans as DEBUG log records. `otel_endpoint` is
@@ -88,8 +91,8 @@ Master redacts sensitive patterns before writing logs or broadcasting to clients
 
 Master exposes metrics through:
 
-- `GET /metrics` in Prometheus text format
-- optional OTLP exporter
+- `GET /metrics` in Prometheus text format (gated by `metrics_enabled`)
+- optional OTLP exporter (planned; gated by `metrics_enabled` + `otel_endpoint`)
 
 Configuration:
 
@@ -237,7 +240,8 @@ Readiness probe. Returns 200 when required subsystems are healthy.
 }
 ```
 
-Returns 503 when a required check fails.
+Returns 503 with `"status": "unavailable"` when a required check fails; the
+offending check is marked `"error"` in `checks`.
 
 ## Periodic Health Checks
 

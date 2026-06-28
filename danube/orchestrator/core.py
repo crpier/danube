@@ -230,12 +230,11 @@ class JobOrchestrator:
         except Exception as e:
             # No environment exists yet, so there is nothing to clean up here;
             # the reaper later reconciles any stale runtime state.
-            logger.warning(
-                "job %s failed to start: runner could not create environment: %s",
-                job_id,
-                e,
-            )
             reason = f"runner failed to create job environment: {e}"
+            logger.warning(
+                "job_start_failed",
+                extra={"event": "job_start_failed", "job_id": job_id, "reason": reason},
+            )
             return await self._finalize(job_id, JobStatus.FAILURE, reason)
 
         self._metrics.runner_containers_active.inc()
@@ -271,19 +270,32 @@ class JobOrchestrator:
                 # stop them now, before cleanup removes the environment.
                 final = JobStatus.CANCELLED
                 reason = running.cancel_reason or "job cancelled"
-                logger.info("job %s cancelled: %s", job_id, reason)
+                logger.info(
+                    "job_cancelled",
+                    extra={
+                        "event": "job_cancelled",
+                        "job_id": job_id,
+                        "reason": reason,
+                    },
+                )
                 await self._runner.stop_job(handle, reason="cancelled")
         except TimeoutError:
             final = JobStatus.TIMEOUT
             reason = (
                 f"job exceeded max_duration_seconds={pipeline.max_duration_seconds}"
             )
-            logger.warning("job %s timed out: %s", job_id, reason)
+            logger.warning(
+                "job_timed_out",
+                extra={"event": "job_timed_out", "job_id": job_id, "reason": reason},
+            )
             await self._runner.stop_job(handle, reason="timeout")
         except Exception as e:  # runner failure starting/awaiting the Coordinator
             final = JobStatus.FAILURE
             reason = f"runner failure: {e}"
-            logger.warning("job %s failed: %s", job_id, reason)
+            logger.warning(
+                "job_failed",
+                extra={"event": "job_failed", "job_id": job_id, "reason": reason},
+            )
         finally:
             await self._control_plane.close_session(job_id)
             await self._cleanup(handle)
