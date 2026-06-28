@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from danube.domain.lifecycle import InvalidTransition
 from danube.rpc.control_plane import (
+    ArtifactSourceError,
     InvalidTokenError,
     SecretNotAuthorizedError,
     SessionNotActiveError,
@@ -75,10 +76,13 @@ async def upload_artifact(
             token,
             request.name,
             request.path,
-            request.size_bytes,
         )
     except (SessionNotActiveError, InvalidTokenError) as error:
         raise _reject_session(error) from None
+    except ArtifactSourceError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+        ) from None
 
 
 @router.post("/report-status")

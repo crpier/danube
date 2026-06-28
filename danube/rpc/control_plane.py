@@ -21,11 +21,14 @@ per-job caching are owned by the injected `SecretService`.
 import hmac
 import logging
 import secrets as secrets_module
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+import anyio
+import anyio.to_thread
 from snekql.sqlite import Database, insert, select, update
 
 from danube.db.models import Artifact, Job, Step
@@ -44,7 +47,6 @@ from danube.security import SecretService
 
 logger = logging.getLogger("danube.rpc")
 
-ARTIFACT_ROOT = Path("/var/lib/danube/artifacts")
 _SECRET_MASK = "***"  # noqa: S105 - log redaction mask, not a credential
 
 
@@ -85,6 +87,20 @@ class SecretNotAuthorizedError(RpcError):
     def __init__(self, key: str) -> None:
         self.key = key
         super().__init__(f"secret {key!r} is not accessible to this pipeline")
+
+
+class ArtifactSourceError(RpcError):
+    """The artifact name or its source path inside the workspace is invalid.
+
+    Covers a name with a path separator, a source that escapes the workspace, and
+    a source that does not exist when the upload is requested. `reason` describes
+    which of those failed; `target` is the offending name or path.
+    """
+
+    def __init__(self, target: str, reason: str) -> None:
+        self.target = target
+        self.reason = reason
+        super().__init__(f"artifact {target!r} {reason}")
 
 
 @dataclass(slots=True)
@@ -203,17 +219,27 @@ class ControlPlane:
         return value
 
     async def upload_artifact(
-        self, job_id: str, token: str, name: str, path: str, size_bytes: int
+        self, job_id: str, token: str, name: str, path: str
     ) -> UploadArtifactResponse:
-        """Record artifact metadata under the job's artifact directory.
+        """Copy an artifact out of the job workspace and record its metadata.
 
-        The real byte transfer from the workspace lands in a later issue; here the
-        Coordinator-reported `path`/`size_bytes` are persisted so the artifact is
-        tracked and downloadable metadata exists.
+        The bytes are captured here, while the session is live, so an artifact is
+        always persisted before the runner deletes the workspace on cleanup
+        (`docs/architecture/execution-model.md`, Workspace). The stored size is
+        computed from the bytes actually written, so directory artifacts are
+        recorded accurately and the Coordinator cannot misreport a size. The source
+        must live inside the workspace and exist now, otherwise it is rejected.
         """
         session = await self._authorize(job_id, token)
+        if "/" in name or "\\" in name or name in {".", ".."}:
+            raise ArtifactSourceError(name, "is not a valid artifact name")
+        destination = self._artifact_path(job_id, name)
+        # Path resolution, containment check, and copy all touch the filesystem, so
+        # they run together in a worker thread off the event loop.
+        stored_size = await anyio.to_thread.run_sync(
+            _capture_artifact, session.handle.workspace_path, path, destination
+        )
         artifact_id = str(uuid.uuid4())
-        destination = ARTIFACT_ROOT / job_id / name
         logger.info("job %s uploaded artifact %r from %s", session.job_id, name, path)
         async with self._db.transaction() as tx:
             await tx.execute(
@@ -223,12 +249,12 @@ class ControlPlane:
                         job_id=job_id,
                         name=name,
                         path=str(destination),
-                        size_bytes=size_bytes,
+                        size_bytes=stored_size,
                     )
                 )
             )
         return UploadArtifactResponse(
-            artifact_id=artifact_id, name=name, size_bytes=size_bytes
+            artifact_id=artifact_id, name=name, size_bytes=stored_size
         )
 
     async def report_status(
@@ -271,6 +297,9 @@ class ControlPlane:
     def _log_path(self, job_id: str) -> Path:
         return self._data_dir / "logs" / f"{job_id}.log"
 
+    def _artifact_path(self, job_id: str, name: str) -> Path:
+        return self._data_dir / "artifacts" / job_id / name
+
     async def _begin_step(
         self, step_id: str, job_id: str, sequence: int, name: str, command: str
     ) -> None:
@@ -305,6 +334,42 @@ class ControlPlane:
                 )
                 .where(Step.id.eq(step_id))
             )
+
+
+def _tree_size(path: Path) -> int:
+    """Total size in bytes of ``path``: its own size if a file, otherwise the sum
+    of every regular file beneath it."""
+    if path.is_file():
+        return path.stat().st_size
+    return sum(child.stat().st_size for child in path.rglob("*") if child.is_file())
+
+
+def _copy_artifact(source: Path, destination: Path) -> int:
+    """Copy ``source`` (a file or directory tree) to ``destination`` and return the
+    total size of the stored bytes. Runs in a worker thread off the event loop."""
+    if destination.is_dir():
+        shutil.rmtree(destination)
+    elif destination.exists():
+        destination.unlink()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        _ = shutil.copytree(source, destination)
+    else:
+        _ = shutil.copy2(source, destination)
+    return _tree_size(destination)
+
+
+def _capture_artifact(workspace_path: str, path: str, destination: Path) -> int:
+    """Resolve ``path`` inside the workspace, copy it to ``destination``, and return
+    the stored size. Runs in a worker thread; raises `ArtifactSourceError` if the
+    source escapes the workspace or does not exist."""
+    workspace = Path(workspace_path).resolve()
+    source = (workspace / path).resolve()
+    if not source.is_relative_to(workspace):
+        raise ArtifactSourceError(path, "escapes the job workspace")
+    if not source.exists():
+        raise ArtifactSourceError(path, "does not exist in the job workspace")
+    return _copy_artifact(source, destination)
 
 
 _TERMINAL_STATES = frozenset(

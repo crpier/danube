@@ -50,6 +50,19 @@ class PipelineResponse(BaseModel):
     updated_at: datetime
 
 
+class ArtifactResponse(BaseModel):
+    """A single artifact row as returned by the artifacts listing endpoint."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    job_id: str
+    name: str
+    path: str
+    size_bytes: int
+    created_at: datetime
+
+
 class RunPipelineRequest(BaseModel):
     """Body for a manual pipeline trigger.
 

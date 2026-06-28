@@ -15,7 +15,6 @@ import os
 from dataclasses import dataclass
 from typing import Any, Self, cast
 
-import anyio
 import httpx
 
 # Environment variables the Coordinator container is started with.
@@ -187,12 +186,13 @@ class ArtifactsApi:
         self._client = client
 
     async def upload(self, path: str, *, name: str) -> UploadedArtifact:
-        """Register the artifact at workspace ``path`` under ``name``."""
-        source = anyio.Path(path)
-        size = (await source.stat()).st_size if await source.exists() else 0
+        """Register the artifact at workspace ``path`` (a file or directory) under
+        ``name``. The Master copies the bytes out of the workspace and is the
+        authority on the stored size; ``path`` is resolved relative to the job
+        workspace, so a path that escapes it or does not exist is rejected."""
         data = await self._client.post(
             "/rpc/upload-artifact",
-            {"path": path, "name": name, "size_bytes": size},
+            {"path": path, "name": name},
         )
         return UploadedArtifact(
             artifact_id=str(data["artifact_id"]),
