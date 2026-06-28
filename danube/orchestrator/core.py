@@ -6,15 +6,17 @@ their output through a `LogWriter`, and records per-step results — advancing t
 job through the lifecycle in `danube.domain.lifecycle` so illegal transitions are
 impossible.
 
-Scope (issue #6): no HTTP API, no Coordinator RPC, no scheduler. The steps to run
-are passed directly to `run_job`; in production they would arrive over the
-Coordinator RPC path, which is out of scope here.
+Scope: no HTTP API, no Coordinator RPC, no scheduler. The steps to run are passed
+directly to `run_job`; in production they would arrive over the Coordinator RPC
+path, which lives outside this component.
 
 Failure handling follows `docs/architecture/execution-model.md`:
 
+- the runner failing to create the environment ends the job in `failure` before
+  it ever reaches `running`;
 - a step exiting non-zero aborts the remaining steps (unless `check=False`),
   ending the job in `failure`;
-- a runner exception ends the job in `failure`;
+- a runner exception while running ends the job in `failure`;
 - exceeding the pipeline's `max_duration_seconds` stops the job and ends it in
   `timeout`.
 
@@ -22,6 +24,7 @@ Failure handling follows `docs/architecture/execution-model.md`:
 every failure path.
 """
 
+import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -42,6 +45,8 @@ from danube.domain.runner_types import (
 )
 from danube.orchestrator.log_writer import LogWriter
 from danube.runner.base import Runner
+
+logger = logging.getLogger("danube.orchestrator")
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,14 +110,26 @@ class JobOrchestrator:
         pipeline = await self._fetch_pipeline(job.pipeline_id)
 
         await self._advance(job_id, JobStatus.SCHEDULING)
-        handle = await self._runner.start_job(
-            StartJobRequest(
-                job_id=job_id,
-                pipeline_id=job.pipeline_id,
-                worker_image=pipeline.worker_image,
-                max_duration_seconds=pipeline.max_duration_seconds,
+        try:
+            handle = await self._runner.start_job(
+                StartJobRequest(
+                    job_id=job_id,
+                    pipeline_id=job.pipeline_id,
+                    worker_image=pipeline.worker_image,
+                    max_duration_seconds=pipeline.max_duration_seconds,
+                )
             )
-        )
+        except Exception as e:
+            # No environment exists yet, so there is nothing to clean up here;
+            # the reaper later reconciles any stale runtime state.
+            logger.warning(
+                "job %s failed to start: runner could not create environment: %s",
+                job_id,
+                e,
+            )
+            reason = f"runner failed to create job environment: {e}"
+            return await self._finalize(job_id, JobStatus.FAILURE, reason)
+
         log_path = self._log_path(job_id)
         await self._record_scheduled(job_id, handle, log_path)
         await self._advance(job_id, JobStatus.RUNNING)
@@ -144,17 +161,20 @@ class JobOrchestrator:
                                 f"step {spec.name!r} failed with exit code "
                                 f"{result.exit_code}"
                             )
+                            logger.warning("job %s: %s; aborting", job_id, reason)
                             break
         except TimeoutError:
             final = JobStatus.TIMEOUT
             reason = (
                 f"job exceeded max_duration_seconds={pipeline.max_duration_seconds}"
             )
+            logger.warning("job %s timed out: %s", job_id, reason)
             await self._runner.stop_job(handle, reason="timeout")
             await self._fail_in_flight(in_flight)
-        except Exception as exc:  # runner failure: abort the job, still clean up.
+        except Exception as e:  # runner failure: abort the job, still clean up.
             final = JobStatus.FAILURE
-            reason = f"runner failure: {exc}"
+            reason = f"runner failure: {e}"
+            logger.warning("job %s failed: %s", job_id, reason)
             await self._fail_in_flight(in_flight)
         finally:
             await self._runner.cleanup_job(handle)

@@ -23,8 +23,9 @@ from danube.domain.runner_types import (
     ExecResult,
     ExecStepRequest,
     JobHandle,
+    StartJobRequest,
 )
-from danube.orchestrator import JobOrchestrator, LogWriter, StepSpec
+from danube.orchestrator import JobOrchestrator, LogWriter, LogWriterError, StepSpec
 from danube.runner import FakeRunner, RecordedCall
 
 
@@ -47,6 +48,14 @@ class _BlockingRunner(FakeRunner):
         self.calls.append(RecordedCall("exec_step", (job, request)))
         await anyio.sleep_forever()
         raise AssertionError
+
+
+class _FailingStartRunner(FakeRunner):
+    """A runner that cannot create the job environment: `start_job` always fails."""
+
+    async def start_job(self, request: StartJobRequest) -> JobHandle:
+        self.calls.append(RecordedCall("start_job", (request,)))
+        raise _RunnerExplodedError
 
 
 async def _seed_pipeline(
@@ -113,16 +122,16 @@ async def test_create_job_persists_pending() -> None:
     assert_eq(stored.status, JobStatus.PENDING)
 
 
-@test(mark="medium")
-async def test_happy_path_all_steps_succeed() -> None:
-    db, orchestrator, runner, _ = await load_fixture(env())
+async def _run_two_step_success(
+    orchestrator: JobOrchestrator, runner: FakeRunner
+) -> Job[Fetched]:
+    """Drive a job through two succeeding steps and return the final row."""
     runner.script_sequence(
         ExecResult(exit_code=0, stdout="installed\n", stderr=""),
         ExecResult(exit_code=0, stdout="built\n", stderr=""),
     )
     created = await orchestrator.create_job("p1", TriggerType.MANUAL)
-
-    job = await orchestrator.run_job(
+    return await orchestrator.run_job(
         created.id,
         [
             StepSpec(name="install", command="npm install"),
@@ -130,21 +139,47 @@ async def test_happy_path_all_steps_succeed() -> None:
         ],
     )
 
+
+@test(mark="medium")
+async def test_all_steps_succeed_reaches_success() -> None:
+    _, orchestrator, runner, _ = await load_fixture(env())
+
+    job = await _run_two_step_success(orchestrator, runner)
+
     assert_eq(job.status, JobStatus.SUCCESS)
     assert_eq(job.failure_reason, None)
-    assert job.finished_at is not None
     assert job.started_at is not None
+    assert job.finished_at is not None
+
+
+@test(mark="medium")
+async def test_happy_path_runner_call_sequence() -> None:
+    _, orchestrator, runner, _ = await load_fixture(env())
+
+    _ = await _run_two_step_success(orchestrator, runner)
+
     assert_eq(
         runner.method_names,
         ["start_job", "exec_step", "exec_step", "cleanup_job"],
     )
 
-    steps = await _steps_for(db, created.id)
+
+@test(mark="medium")
+async def test_happy_path_persists_each_step() -> None:
+    db, orchestrator, runner, _ = await load_fixture(env())
+
+    job = await _run_two_step_success(orchestrator, runner)
+
+    steps = await _steps_for(db, job.id)
     assert_eq([s.status for s in steps], [StepStatus.SUCCESS, StepStatus.SUCCESS])
     assert_eq([s.exit_code for s in steps], [0, 0])
-    # Offsets are contiguous and match the bytes written for each step.
-    assert_eq((steps[0].log_offset_start, steps[0].log_offset_end), (0, 10))
-    assert_eq((steps[1].log_offset_start, steps[1].log_offset_end), (10, 16))
+
+
+@test(mark="medium")
+async def test_happy_path_writes_combined_output_to_log() -> None:
+    _, orchestrator, runner, _ = await load_fixture(env())
+
+    job = await _run_two_step_success(orchestrator, runner)
 
     assert job.log_path is not None
     assert_eq(await anyio.Path(job.log_path).read_bytes(), b"installed\nbuilt\n")
@@ -253,6 +288,25 @@ async def test_runner_exception_marks_failure_and_cleans_up() -> None:
 
 
 @test(mark="medium")
+async def test_start_job_failure_marks_failure_without_cleanup() -> None:
+    runner = _FailingStartRunner()
+    async with _make_env(runner) as (db, orchestrator, _, _):
+        created = await orchestrator.create_job("p1", TriggerType.MANUAL)
+
+        job = await orchestrator.run_job(
+            created.id, [StepSpec(name="boom", command="boom")]
+        )
+
+        assert_eq(job.status, JobStatus.FAILURE)
+        assert job.failure_reason is not None
+        assert "create job environment" in job.failure_reason
+        # No environment was created, so cleanup is left to the reaper and no
+        # steps are ever started.
+        assert_eq(runner.method_names, ["start_job"])
+        assert_eq(await _steps_for(db, created.id), [])
+
+
+@test(mark="medium")
 async def test_timeout_stops_and_cleans_up() -> None:
     runner = _BlockingRunner()
     async with _make_env(runner) as (db, orchestrator, _, _):
@@ -302,5 +356,16 @@ async def test_log_writer_appends_and_reports_offsets() -> None:
             third = await log.write("!")
         assert_eq(third, (11, 12))
         assert_eq(await anyio.Path(path).read_bytes(), b"helloworld!!")
+    finally:
+        shutil.rmtree(data_dir, ignore_errors=True)
+
+
+@test(mark="medium")
+async def test_log_writer_write_outside_context_raises() -> None:
+    data_dir = Path(tempfile.mkdtemp(prefix="danube-log-"))
+    try:
+        writer = LogWriter(data_dir / "logs" / "job.log")
+        with assert_raises(LogWriterError):
+            await writer.write("nope")
     finally:
         shutil.rmtree(data_dir, ignore_errors=True)

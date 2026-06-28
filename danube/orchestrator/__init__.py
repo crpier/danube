@@ -6,10 +6,11 @@ state transitions.
 """
 
 from danube.orchestrator.core import JobOrchestrator, StepSpec
-from danube.orchestrator.log_writer import LogWriter
+from danube.orchestrator.log_writer import LogWriter, LogWriterError
 
 __all__ = [
     "JobOrchestrator",
     "LogWriter",
+    "LogWriterError",
     "StepSpec",
 ]

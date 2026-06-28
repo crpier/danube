@@ -18,6 +18,10 @@ from typing import Self
 import anyio
 
 
+class LogWriterError(Exception):
+    """Raised when a `LogWriter` is used outside its open async context."""
+
+
 class LogWriter:
     """Async, append-only writer for a single job's log file.
 
@@ -54,7 +58,7 @@ class LogWriter:
         """Append ``text`` and return its ``(start, end)`` byte offsets."""
         if self._file is None:
             message = "LogWriter.write called outside its async context"
-            raise RuntimeError(message)
+            raise LogWriterError(message)
         data = text.encode("utf-8")
         start = self._offset
         _ = await self._file.write(data)

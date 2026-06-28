@@ -8,6 +8,8 @@ from danube.domain.lifecycle import InvalidTransition, transition
 LEGAL_TRANSITIONS = [
     (JobStatus.PENDING, JobStatus.SCHEDULING),
     (JobStatus.SCHEDULING, JobStatus.RUNNING),
+    # The runner can fail to create the environment during scheduling.
+    (JobStatus.SCHEDULING, JobStatus.FAILURE),
     (JobStatus.RUNNING, JobStatus.SUCCESS),
     (JobStatus.RUNNING, JobStatus.FAILURE),
     (JobStatus.RUNNING, JobStatus.TIMEOUT),
