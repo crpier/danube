@@ -73,6 +73,16 @@ class RunPipelineRequest(BaseModel):
     ref: str | None = None
 
 
+class WebhookResponse(BaseModel):
+    """Result of ingesting a webhook: the ids of the jobs it enqueued.
+
+    An empty list is a clean no-op — the event was valid but matched no pipeline,
+    deduped onto an in-flight job, or was an event type Danube ignores.
+    """
+
+    triggered: list[str]
+
+
 class Page[T](BaseModel):
     """A paginated slice of a larger result set.
 

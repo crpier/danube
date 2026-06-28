@@ -45,6 +45,14 @@ egress_proxy_enabled = true
 egress_proxy_address = "127.0.0.1:9080"
 registry_address = "127.0.0.1:5000"
 
+[webhooks]
+# Per-provider secrets used to authenticate inbound Git webhooks. GitHub signs the
+# request body with this secret (HMAC-SHA256, sent in `X-Hub-Signature-256`);
+# GitLab echoes its token in `X-Gitlab-Token`. Leave a value unset to disable that
+# provider's endpoint — it then rejects every request, since it cannot be verified.
+github_secret = ""
+gitlab_token = ""
+
 [database]
 path = "/var/lib/danube/danube.db"
 

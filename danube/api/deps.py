@@ -14,6 +14,7 @@ from fastapi import Depends, Query
 from snekql.sqlite import Database
 
 from danube.orchestrator import JobManager
+from danube.webhooks import WebhookConfig
 
 # Bound the page size so a client cannot ask for an unbounded result set.
 MAX_PAGE_LIMIT = 200
@@ -45,6 +46,20 @@ def get_job_manager() -> JobManager:
 
 
 JobManagerDep = Annotated[JobManager, Depends(get_job_manager)]
+
+
+def get_webhook_config() -> WebhookConfig:
+    """Dependency key for the per-provider webhook secrets.
+
+    Always overridden via `app.dependency_overrides` in `create_app` when webhook
+    ingestion is mounted; reaching this body means a webhook route was mounted
+    without a configuration.
+    """
+    msg = "webhook config dependency is not configured; build the app with create_app"
+    raise RuntimeError(msg)
+
+
+WebhookConfigDep = Annotated[WebhookConfig, Depends(get_webhook_config)]
 
 
 @dataclass(frozen=True, slots=True)
