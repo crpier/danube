@@ -13,19 +13,19 @@ from pathlib import Path
 
 import anyio
 import anyio.to_thread
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse, Response
 from snekql.sqlite import NoResultError, select
 from starlette.background import BackgroundTask
 
-from danube.api.deps import DbDep
+from danube.api.deps import DbDep, require_job_read
 from danube.api.schemas import ArtifactResponse
 from danube.db.models import Artifact, Job
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
 
-@router.get("/{job_id}")
+@router.get("/{job_id}", dependencies=[Depends(require_job_read)])
 async def list_artifacts(job_id: str, db: DbDep) -> list[ArtifactResponse]:
     """List a job's artifacts by name; 404 if no job has that id.
 
@@ -48,7 +48,7 @@ async def list_artifacts(job_id: str, db: DbDep) -> list[ArtifactResponse]:
     return [ArtifactResponse.model_validate(row) for row in rows]
 
 
-@router.get("/{job_id}/{name}")
+@router.get("/{job_id}/{name}", dependencies=[Depends(require_job_read)])
 async def download_artifact(job_id: str, name: str, db: DbDep) -> Response:
     """Stream one stored artifact: the file bytes, or a tar of a directory tree."""
     async with db.transaction() as tx:

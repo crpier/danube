@@ -175,6 +175,21 @@ JWT validation must check:
 - audience
 - subject/user mapping
 
+Two signing algorithms are supported, configured under `[auth]` in the server
+config:
+
+- `HS256` — a symmetric shared secret. This is also the *embedded IdP* mode for
+  single-host setups: Danube both mints and verifies tokens with the same secret.
+- `RS256` — an asymmetric RSA public key, for an external OIDC provider whose
+  public key (PEM) is provisioned into the appliance.
+
+The verifier pins the configured algorithm and rejects `alg: "none"` and tokens
+whose header algorithm disagrees, defeating algorithm-confusion downgrades.
+Authenticated principals are mapped to Blueprint users by OIDC `sub`
+(`users.oidc_subject`) and then by email (`users.email`). Authentication and RBAC
+apply to the UI/API only; the Coordinator RPC path keeps its separate job-scoped
+token auth. Health and metrics endpoints are not gated by auth.
+
 ### Authorization: Team-Based RBAC
 
 Model:

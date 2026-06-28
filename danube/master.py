@@ -16,6 +16,7 @@ from snekql.sqlite import Database
 
 from danube import __version__
 from danube.api import create_app
+from danube.auth import AuthConfig
 from danube.db import open_database
 from danube.observability import (
     Metrics,
@@ -44,17 +45,20 @@ class MasterConfig:
     bind_address: str = DEFAULT_BIND_ADDRESS
     database_path: Path | str = DEFAULT_DATABASE_PATH
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    auth: AuthConfig | None = None
 
 
 def load_config(config_path: Path | None) -> MasterConfig:
     """Load Master configuration from the given path.
 
     Stubbed for now: only the path is retained and defaults are used for the
-    bind address and database location. Observability toggles come from the
-    environment until full server-config parsing arrives.
+    bind address and database location. Observability and auth toggles come from
+    the environment until full server-config parsing arrives.
     """
     return MasterConfig(
-        config_path=config_path, observability=ObservabilityConfig.from_env()
+        config_path=config_path,
+        observability=ObservabilityConfig.from_env(),
+        auth=AuthConfig.from_env(),
     )
 
 
@@ -87,6 +91,7 @@ async def build_app(config: MasterConfig) -> tuple[FastAPI, Database]:
             metrics=Metrics(),
             tracer=tracer,
             metrics_enabled=config.observability.metrics_enabled,
+            auth=config.auth,
         ),
         db,
     )

@@ -18,6 +18,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from danube import __version__
 from danube.api.deps import (
+    get_auth_config,
     get_db,
     get_job_manager,
     get_metrics,
@@ -36,6 +37,7 @@ from danube.api.routes import (
 from danube.api.routes import (
     metrics as metrics_route,
 )
+from danube.auth import AuthConfig
 from danube.observability import Metrics, Tracer
 from danube.orchestrator import JobManager
 from danube.rpc import ControlPlane
@@ -98,7 +100,7 @@ def _wire_observability(
     app.add_middleware(_TracingMiddleware, tracer=tracer)
 
 
-def create_app(  # noqa: PLR0913 - factory wiring each optional subsystem explicitly
+def create_app(  # noqa: PLR0913, C901 - factory wiring each optional subsystem explicitly
     db: Database,
     control_plane: ControlPlane | None = None,
     job_manager: JobManager | None = None,
@@ -108,6 +110,7 @@ def create_app(  # noqa: PLR0913 - factory wiring each optional subsystem explic
     tracer: Tracer | None = None,
     runner: Runner | None = None,
     metrics_enabled: bool = True,
+    auth: AuthConfig | None = None,
 ) -> FastAPI:
     """Build the FastAPI app, injecting `db` as the request-scoped database.
 
@@ -120,6 +123,10 @@ def create_app(  # noqa: PLR0913 - factory wiring each optional subsystem explic
 
     `metrics_enabled` (from `spec.observability`) gates the `/metrics` endpoint:
     when false the route is not mounted, so scrapes get a 404.
+
+    Passing `auth` turns on OIDC/JWT authentication and team-based RBAC for the
+    UI/API routes (read and control); without it the API is unauthenticated.
+    Health and metrics endpoints are never gated by auth.
     """
     app = FastAPI(title="Danube Master API", version=__version__)
 
@@ -127,6 +134,12 @@ def create_app(  # noqa: PLR0913 - factory wiring each optional subsystem explic
         return db
 
     app.dependency_overrides[get_db] = provide_db
+    if auth is not None:
+
+        def provide_auth() -> AuthConfig | None:
+            return auth
+
+        app.dependency_overrides[get_auth_config] = provide_auth
     _wire_observability(app, metrics or Metrics(), tracer or Tracer(), runner)
 
     app.include_router(health.router)
