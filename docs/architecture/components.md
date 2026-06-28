@@ -67,9 +67,28 @@ The control-plane routes (`run`, `cancel`, `logs/stream`) are mounted only when 
 
 - Delete logs older than `retention.logs_days`
 - Delete artifacts older than `retention.artifacts_days`
-- Delete cached images older than `retention.registry_images_days`
-- Remove abandoned job workspaces and containers
-- Runs daily at 03:00 UTC by default
+- Delete cached images older than `retention.registry_images_days` (delegated to
+  the image-cache pruner; absent until that subsystem exists, so image GC is a
+  no-op when no pruner is wired)
+- Delete workspaces older than `retention.workspaces_days`; `0` means "delete on
+  job end", so any non-active job's workspace is removed regardless of age
+- Remove abandoned job workspaces and containers by driving the runner's
+  `reconcile()` and retrying `cleanup_job` for the stale pods/containers/
+  workspaces and the cleanups that failed during job teardown. A retry that fails
+  is recorded (`danube_runner_cleanup_failures_total`) and resurfaces next pass,
+  since the runner persists a `cleanup_failed` row that `reconcile()` reports
+  again; the unresolved count is exposed as the cleanup backlog for health checks.
+- Runs daily at 03:00 UTC by default (configurable)
+
+**Invariants**:
+
+- Never deletes data for a job in an active (non-terminal) status.
+- Never deletes data for a job an operator has flagged for preservation
+  (debug/retention holds); a global `preserve_all` hold turns a whole pass into a
+  no-op.
+
+`run_once(now)` takes the clock explicitly so a pass is deterministic under test;
+the background loop computes the delay to the next scheduled time and drives it.
 
 ### Blueprint Syncer
 
