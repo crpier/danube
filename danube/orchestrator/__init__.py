@@ -14,8 +14,13 @@ from danube.orchestrator.core import (
 )
 from danube.orchestrator.log_writer import LogWriter, LogWriterError
 from danube.orchestrator.manager import JobManager
+from danube.orchestrator.scheduler import (
+    DEFAULT_MAX_CONCURRENT_JOBS,
+    Scheduler,
+)
 
 __all__ = [
+    "DEFAULT_MAX_CONCURRENT_JOBS",
     "CannotCancelError",
     "JobManager",
     "JobNotFoundError",
@@ -23,4 +28,5 @@ __all__ = [
     "LogWriter",
     "LogWriterError",
     "PipelineNotFoundError",
+    "Scheduler",
 ]

@@ -285,4 +285,4 @@ Capacity is bounded by:
 - SQLite write contention
 - log I/O throughput
 
-Default behavior should include a conservative global concurrency limit rather than relying on unbounded host scheduling.
+Default behavior should include a conservative global concurrency limit rather than relying on unbounded host scheduling. The Scheduler enforces this cap on the shared enqueue path: triggers beyond the cap stay `pending` and are dispatched to the orchestrator as running jobs finish. The per-pipeline policy is dedup by pipeline/ref — at most one active job per pipeline/ref at a time (see `components.md`, Scheduler).

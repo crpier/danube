@@ -130,6 +130,15 @@ class JobOrchestrator:
         self._rpc_address = rpc_address
         self._running: dict[str, _RunningJob] = {}
 
+    @property
+    def db(self) -> Database:
+        """The database this orchestrator persists jobs to.
+
+        Exposed so collaborators that share the orchestrator's job store (such as
+        the `Scheduler`) can query job/pipeline rows without a second handle.
+        """
+        return self._db
+
     async def create_job(
         self,
         pipeline_id: str,
