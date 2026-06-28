@@ -17,7 +17,7 @@ from snekql.sqlite import Database
 
 from danube import __version__
 from danube.api.deps import get_db, get_job_manager
-from danube.api.routes import control, health, jobs, pipelines
+from danube.api.routes import artifacts, control, health, jobs, pipelines
 from danube.orchestrator import JobManager
 from danube.rpc import ControlPlane
 from danube.rpc import router as rpc_router
@@ -48,6 +48,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(jobs.router, prefix=API_V1_PREFIX)
     app.include_router(pipelines.router, prefix=API_V1_PREFIX)
+    app.include_router(artifacts.router, prefix=API_V1_PREFIX)
 
     if control_plane is not None:
 

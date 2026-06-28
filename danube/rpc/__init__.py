@@ -7,6 +7,7 @@ router in `danube.rpc.routes` exposes it over HTTP/JSON; the Coordinator SDK in
 """
 
 from danube.rpc.control_plane import (
+    ArtifactSourceError,
     ControlPlane,
     InvalidTokenError,
     JobSession,
@@ -18,6 +19,7 @@ from danube.rpc.control_plane import (
 from danube.rpc.routes import router
 
 __all__ = [
+    "ArtifactSourceError",
     "ControlPlane",
     "InvalidTokenError",
     "JobSession",

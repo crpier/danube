@@ -6,7 +6,9 @@ Coordinator SDK (`DanubeClient`) is pointed at that ASGI transport, so each test
 drives the real HTTP/JSON path end-to-end without Podman or a socket.
 """
 
+import io
 import shutil
+import tarfile
 import tempfile
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -31,6 +33,10 @@ from examples.danubefile import pipeline
 
 JOB_ID = "j1"
 TOKEN = "job-token-abc"
+# Bytes seeded into the job workspace so artifact uploads have real content to copy.
+_ARTIFACT_FILE_BYTES = b"\x00\x01binary-artifact-payload\xff"
+_COVERAGE_INDEX = b"<html>coverage</html>"
+_COVERAGE_DATA = b"line,hit\n1,1\n"
 # One cipher shared by the seed (encrypt) and the SecretService (decrypt) so the
 # stored blobs are real AES-256-GCM ciphertext rather than plaintext.
 _CIPHER = SecretCipher(generate_key())
@@ -96,6 +102,16 @@ async def _seed(db: Database) -> None:
         )
 
 
+def _seed_workspace(workspace: Path) -> None:
+    """Lay out a workspace with a file artifact and a directory artifact."""
+    (workspace / "dist").mkdir(parents=True, exist_ok=True)
+    (workspace / "dist" / "app.tar.gz").write_bytes(_ARTIFACT_FILE_BYTES)
+    coverage = workspace / "coverage"
+    (coverage / "sub").mkdir(parents=True, exist_ok=True)
+    (coverage / "index.html").write_bytes(_COVERAGE_INDEX)
+    (coverage / "sub" / "data.csv").write_bytes(_COVERAGE_DATA)
+
+
 @dataclass
 class Harness:
     db: Database
@@ -123,6 +139,12 @@ async def _make_harness(runner: FakeRunner) -> AsyncGenerator[Harness]:
         handle = await runner.start_job(
             StartJobRequest(job_id=JOB_ID, pipeline_id="p1", worker_image="img:p1")
         )
+        # The FakeRunner hands back a path that does not exist on disk; point the
+        # session at a real workspace seeded with a file and a directory so the
+        # control plane can actually copy artifact bytes out of it.
+        workspace = data_dir / "workspaces" / JOB_ID
+        _seed_workspace(workspace)
+        handle = handle.model_copy(update={"workspace_path": str(workspace)})
         _ = await control_plane.open_session(
             job_id=JOB_ID, pipeline_id="p1", handle=handle, token=TOKEN
         )
@@ -311,6 +333,106 @@ async def test_upload_artifact_records_row() -> None:
         )
     assert_eq(row.name, "app-bundle")
     assert_eq(row.job_id, JOB_ID)
+
+
+@test(mark="medium")
+async def test_upload_file_artifact_is_stored_and_downloadable() -> None:
+    h = await load_fixture(harness())
+
+    uploaded = await h.danube().artifacts.upload("dist/app.tar.gz", name="app-bundle")
+
+    # Stored under <data_dir>/artifacts/<job_id>/<name> with the workspace bytes.
+    stored = h.data_dir / "artifacts" / JOB_ID / "app-bundle"
+    assert_eq(stored.read_bytes(), _ARTIFACT_FILE_BYTES)
+    assert_eq(uploaded.size_bytes, len(_ARTIFACT_FILE_BYTES))
+
+    response = await h.http.get(f"/api/v1/artifacts/{JOB_ID}/app-bundle")
+    assert_eq(response.status_code, 200)
+    assert_eq(response.content, _ARTIFACT_FILE_BYTES)
+
+
+@test(mark="medium")
+async def test_upload_directory_artifact_is_stored_and_downloadable() -> None:
+    h = await load_fixture(harness())
+
+    uploaded = await h.danube().artifacts.upload("coverage", name="coverage-report")
+
+    # The whole tree is captured under the documented path.
+    stored = h.data_dir / "artifacts" / JOB_ID / "coverage-report"
+    assert stored.is_dir()
+    assert_eq((stored / "index.html").read_bytes(), _COVERAGE_INDEX)
+    assert_eq((stored / "sub" / "data.csv").read_bytes(), _COVERAGE_DATA)
+    assert_eq(uploaded.size_bytes, len(_COVERAGE_INDEX) + len(_COVERAGE_DATA))
+
+    # The download is a tar of the tree; unpack it and check the bytes survive.
+    response = await h.http.get(f"/api/v1/artifacts/{JOB_ID}/coverage-report")
+    assert_eq(response.status_code, 200)
+    with tarfile.open(fileobj=io.BytesIO(response.content), mode="r") as archive:
+        members = {m.name for m in archive.getmembers() if m.isfile()}
+        index = archive.extractfile("index.html")
+        data = archive.extractfile("sub/data.csv")
+        assert index is not None
+        assert data is not None
+        assert_eq(index.read(), _COVERAGE_INDEX)
+        assert_eq(data.read(), _COVERAGE_DATA)
+    assert_eq(members, {"index.html", "sub/data.csv"})
+
+
+@test(mark="medium")
+async def test_list_artifacts_for_job() -> None:
+    h = await load_fixture(harness())
+    _ = await h.danube().artifacts.upload("dist/app.tar.gz", name="app-bundle")
+    _ = await h.danube().artifacts.upload("coverage", name="coverage-report")
+
+    response = await h.http.get(f"/api/v1/artifacts/{JOB_ID}")
+
+    assert_eq(response.status_code, 200)
+    body = response.json()
+    assert_eq([a["name"] for a in body], ["app-bundle", "coverage-report"])
+    assert_eq([a["job_id"] for a in body], [JOB_ID, JOB_ID])
+
+
+@test(mark="medium")
+async def test_upload_after_job_end_is_rejected() -> None:
+    h = await load_fixture(harness())
+    _ = await h.danube().status.report("success")
+
+    with assert_raises(RpcError) as caught:
+        await h.danube().artifacts.upload("dist/app.tar.gz", name="late")
+
+    assert_eq(caught.exception.status_code, 404)
+    async with h.db.transaction() as tx:
+        rows = await tx.fetch_all(select(Artifact).where(Artifact.job_id.eq(JOB_ID)))
+    assert_eq(rows, [])
+
+
+@test(mark="medium")
+async def test_upload_missing_source_is_rejected() -> None:
+    h = await load_fixture(harness())
+
+    with assert_raises(RpcError) as caught:
+        await h.danube().artifacts.upload("dist/missing.bin", name="ghost")
+
+    assert_eq(caught.exception.status_code, 400)
+
+
+@test(mark="medium")
+async def test_upload_path_escaping_workspace_is_rejected() -> None:
+    h = await load_fixture(harness())
+
+    with assert_raises(RpcError) as caught:
+        await h.danube().artifacts.upload("../../etc/passwd", name="escape")
+
+    assert_eq(caught.exception.status_code, 400)
+
+
+@test(mark="medium")
+async def test_download_unknown_artifact_is_404() -> None:
+    h = await load_fixture(harness())
+
+    response = await h.http.get(f"/api/v1/artifacts/{JOB_ID}/nope")
+
+    assert_eq(response.status_code, 404)
 
 
 @test(mark="medium")
