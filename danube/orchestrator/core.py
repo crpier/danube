@@ -33,12 +33,20 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
-from snekql.sqlite import Database, Fetched, insert, select, update
+from snekql.sqlite import (
+    Database,
+    Fetched,
+    NoResultError,
+    insert,
+    select,
+    update,
+)
 
 from danube.db.models import Job, Pipeline
 from danube.domain.enums import JobStatus, TriggerType
@@ -59,6 +67,50 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+class PipelineNotFoundError(Exception):
+    """Raised when a job is triggered for a pipeline that does not exist."""
+
+    def __init__(self, pipeline_id: str) -> None:
+        self.pipeline_id = pipeline_id
+        super().__init__(f"pipeline {pipeline_id!r} not found")
+
+
+class JobNotFoundError(Exception):
+    """Raised when an operation references a job id that does not exist."""
+
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+        super().__init__(f"job {job_id!r} not found")
+
+
+class CannotCancelError(Exception):
+    """Raised when a cancel is requested for a job that is not currently running.
+
+    Only a `running` job can be cancelled; a job that is still scheduling, or has
+    already reached a terminal state, cannot transition to `cancelled`.
+    """
+
+    def __init__(self, job_id: str, current: JobStatus) -> None:
+        self.job_id = job_id
+        self.current = current
+        super().__init__(f"job {job_id!r} cannot be cancelled from {current}")
+
+
+@dataclass(slots=True)
+class _RunningJob:
+    """In-flight bookkeeping for a job `run_job` is currently driving.
+
+    `cancel_scope` wraps the Coordinator wait; cancelling it unwinds the wait so
+    the job finalizes as `cancelled`. The handle is recorded once the runner has
+    created the environment so a cancellation can stop the containers.
+    """
+
+    handle: JobHandle | None = None
+    cancel_scope: anyio.CancelScope | None = None
+    cancel_requested: bool = False
+    cancel_reason: str | None = field(default=None)
+
+
 class JobOrchestrator:
     """Persist and run jobs against a `Runner`, a `ControlPlane`, and a database."""
 
@@ -76,6 +128,7 @@ class JobOrchestrator:
         self._data_dir = Path(data_dir)
         self._control_plane = control_plane
         self._rpc_address = rpc_address
+        self._running: dict[str, _RunningJob] = {}
 
     async def create_job(
         self,
@@ -83,7 +136,15 @@ class JobOrchestrator:
         trigger_type: TriggerType,
         trigger_ref: str | None = None,
     ) -> Job[Fetched]:
-        """Persist a new job in `pending` and return the stored row."""
+        """Persist a new job in `pending` and return the stored row.
+
+        Raises `PipelineNotFoundError` if no pipeline has `pipeline_id`, so the
+        caller can reject the trigger before a job row is created.
+        """
+        try:
+            _ = await self._fetch_pipeline(pipeline_id)
+        except NoResultError:
+            raise PipelineNotFoundError(pipeline_id) from None
         job_id = str(uuid.uuid4())
         async with self._db.transaction() as tx:
             await tx.execute(
@@ -109,7 +170,19 @@ class JobOrchestrator:
         unless the Coordinator already reported a terminal status. The session is
         closed and `runner.cleanup_job` runs once the environment exists, on every
         path.
+
+        While the job runs it is registered in `self._running` so a concurrent
+        `request_cancel` can unwind it; the entry is dropped on exit.
         """
+        running = _RunningJob()
+        self._running[job_id] = running
+        try:
+            return await self._drive_job(job_id, running)
+        finally:
+            _ = self._running.pop(job_id, None)
+
+    async def _drive_job(self, job_id: str, running: _RunningJob) -> Job[Fetched]:
+        """Drive a registered job to a terminal state. See `run_job`."""
         job = await self._fetch_job(job_id)
         pipeline = await self._fetch_pipeline(job.pipeline_id)
 
@@ -134,12 +207,12 @@ class JobOrchestrator:
             reason = f"runner failed to create job environment: {e}"
             return await self._finalize(job_id, JobStatus.FAILURE, reason)
 
+        running.handle = handle
         log_path = self._log_path(job_id)
         session = await self._control_plane.open_session(
             job_id=job_id, pipeline_id=job.pipeline_id, handle=handle
         )
         await self._record_scheduled(job_id, handle, log_path)
-        await self._advance(job_id, JobStatus.RUNNING)
 
         coordinator_env = {
             ENV_RPC_ADDRESS: self._rpc_address,
@@ -149,10 +222,23 @@ class JobOrchestrator:
         final = JobStatus.SUCCESS
         reason: str | None = None
         try:
-            with anyio.fail_after(pipeline.max_duration_seconds):
-                await self._runner.start_coordinator(handle, coordinator_env)
-                exit_info = await self._runner.wait_for_coordinator(handle)
-            final, reason = self._outcome(exit_info)
+            # The cancel scope is registered before the job is marked `running` so
+            # that a `request_cancel` (which only fires once the DB shows `running`)
+            # always finds a live scope to cancel.
+            with anyio.CancelScope() as scope:
+                running.cancel_scope = scope
+                await self._advance(job_id, JobStatus.RUNNING)
+                with anyio.fail_after(pipeline.max_duration_seconds):
+                    await self._runner.start_coordinator(handle, coordinator_env)
+                    exit_info = await self._runner.wait_for_coordinator(handle)
+                final, reason = self._outcome(exit_info)
+            if scope.cancelled_caught:
+                # Cancellation unwound the wait but did not stop the containers;
+                # stop them now, before cleanup removes the environment.
+                final = JobStatus.CANCELLED
+                reason = running.cancel_reason or "job cancelled"
+                logger.info("job %s cancelled: %s", job_id, reason)
+                await self._runner.stop_job(handle, reason="cancelled")
         except TimeoutError:
             final = JobStatus.TIMEOUT
             reason = (
@@ -169,6 +255,41 @@ class JobOrchestrator:
             await self._runner.cleanup_job(handle)
 
         return await self._finalize_unless_terminal(job_id, final, reason)
+
+    async def request_cancel(
+        self, job_id: str, reason: str = "job cancelled by user"
+    ) -> None:
+        """Request cancellation of a running job.
+
+        Only a `running` job can be cancelled. An unknown job raises
+        `JobNotFoundError`; a job that is not currently running (still scheduling,
+        or already terminal) raises `CannotCancelError`. On success the running
+        job's cancel scope is cancelled, which unwinds the Coordinator wait so
+        `run_job` finalizes the job as `cancelled` and cleans up.
+        """
+        job = await self.fetch_job(job_id)
+        current = JobStatus(job.status)
+        running = self._running.get(job_id)
+        if (
+            current is not JobStatus.RUNNING
+            or running is None
+            or running.cancel_scope is None
+        ):
+            raise CannotCancelError(job_id, current)
+        running.cancel_requested = True
+        running.cancel_reason = reason
+        running.cancel_scope.cancel()
+
+    async def fetch_job(self, job_id: str) -> Job[Fetched]:
+        """Return the job row, raising `JobNotFoundError` if it does not exist."""
+        try:
+            return await self._fetch_job(job_id)
+        except NoResultError:
+            raise JobNotFoundError(job_id) from None
+
+    def log_path(self, job_id: str) -> Path:
+        """Return the on-disk path of a job's append-only log file."""
+        return self._log_path(job_id)
 
     def _outcome(self, exit_info: CoordinatorExit) -> tuple[JobStatus, str | None]:
         """Map a Coordinator exit to a job outcome.
