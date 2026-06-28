@@ -158,7 +158,14 @@ def _verify_signature(
 
 def _load_rsa_public_key(config: AuthConfig) -> rsa.RSAPublicKey:
     pem = config.public_key_pem or ""
-    key = serialization.load_pem_public_key(pem.encode())
+    try:
+        # A corrupt/unparseable PEM raises ValueError; surface it as a token
+        # rejection (HTTP 401) rather than letting it escape as an unmapped 500,
+        # so JwtError's "all map to HTTP 401" contract holds.
+        key = serialization.load_pem_public_key(pem.encode())
+    except ValueError as error:
+        msg = "configured RS256 public key is not a valid PEM"
+        raise InvalidTokenError(msg) from error
     if not isinstance(key, rsa.RSAPublicKey):
         msg = "configured RS256 public key is not an RSA key"
         raise InvalidTokenError(msg)

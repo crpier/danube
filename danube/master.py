@@ -81,6 +81,11 @@ async def build_app(config: MasterConfig) -> tuple[FastAPI, Database]:
     database lifetime (and can close it on shutdown).
     """
     db = await open_database(config.database_path)
+    if config.auth is None:
+        logger.warning(
+            "master_auth_disabled",
+            extra={"event": "master_auth_disabled"},
+        )
     tracer = Tracer(
         enabled=config.observability.traces_enabled,
         endpoint=config.observability.otel_endpoint,

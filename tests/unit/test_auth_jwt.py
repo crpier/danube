@@ -254,3 +254,24 @@ def test_rs256_wrong_key_rejected() -> None:
 
     with assert_raises(InvalidSignatureError):
         _ = verify(token, config)
+
+
+@test(mark="fast")
+def test_rs256_corrupt_pem_rejected_as_token_error() -> None:
+    """A garbled (but present) PEM yields a 401-mapping JwtError, not a 500.
+
+    `__post_init__` only checks the PEM is non-empty, so a corrupt PEM reaches
+    `verify`; the verifier must turn the underlying ``ValueError`` into an
+    `InvalidTokenError` to honour JwtError's "all map to HTTP 401" contract.
+    """
+    signing_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    config = AuthConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        algorithm="RS256",
+        public_key_pem="-----BEGIN PUBLIC KEY-----\nnot-a-real-key\n-----END PUBLIC KEY-----\n",
+    )
+    token = _rs256_token(signing_key, _payload())
+
+    with assert_raises(InvalidTokenError):
+        _ = verify(token, config)

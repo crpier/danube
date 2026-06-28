@@ -89,12 +89,23 @@ class AuthConfig:
             candidate = Path(public_key)
             if candidate.is_file():
                 public_key = candidate.read_text(encoding="utf-8")
-        leeway_raw = os.environ.get(AUTH_LEEWAY_SECONDS_ENV, "0")
+        leeway_raw = os.environ.get(AUTH_LEEWAY_SECONDS_ENV, "0").strip()
+        try:
+            leeway_seconds = int(leeway_raw)
+        except ValueError as error:
+            # Fail loud rather than silently zeroing a security knob.
+            msg = f"{AUTH_LEEWAY_SECONDS_ENV} must be an integer, got {leeway_raw!r}"
+            raise AuthConfigError(msg) from error
+        if leeway_seconds < 0:
+            msg = (
+                f"{AUTH_LEEWAY_SECONDS_ENV} must not be negative, got {leeway_seconds}"
+            )
+            raise AuthConfigError(msg)
         return cls(
             issuer=os.environ.get(AUTH_ISSUER_ENV, ""),
             audience=os.environ.get(AUTH_AUDIENCE_ENV, ""),
             algorithm=algorithm,
             secret=os.environ.get(AUTH_HS256_SECRET_ENV),
             public_key_pem=public_key,
-            leeway_seconds=int(leeway_raw) if leeway_raw.isdigit() else 0,
+            leeway_seconds=leeway_seconds,
         )

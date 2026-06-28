@@ -66,7 +66,7 @@ algorithm = "HS256"                  # "HS256" (shared secret) or "RS256" (OIDC 
 hs256_secret = ""
 # RS256: the identity provider's public key, inline PEM or a path to a PEM file.
 public_key = "/var/lib/danube/keys/oidc_public.pem"
-leeway_seconds = 0                   # clock-skew tolerance applied to expiry
+leeway_seconds = 0                   # clock-skew tolerance (non-negative integer) applied to expiry
 
 [database]
 path = "/var/lib/danube/danube.db"
