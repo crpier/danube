@@ -11,12 +11,17 @@
 **Endpoints**:
 
 - `/api/v1/pipelines` - Pipeline management
+- `POST /api/v1/pipelines/{id}/run` - Manually trigger a run; creates a `pending` job, runs it in the background via the `JobManager`, returns the job (unknown pipeline → 404)
 - `/api/v1/jobs` - Job listing and control
+- `POST /api/v1/jobs/{id}/cancel` - Request cancellation of a `running` job (unknown → 404; not running → 409)
+- `GET /api/v1/jobs/{id}/logs/stream` - Server-Sent Events log stream: replays the existing log file, then tails new lines until the job is terminal, closing with an `event: end` frame
 - `/api/v1/artifacts` - Artifact download
 - `/webhooks/github`, `/webhooks/gitlab` - Git webhook ingestion
 - `/health`, `/health/ready` - Health checks
 - `/metrics` - Prometheus metrics
 - `/` - Frontend SPA
+
+The control-plane routes (`run`, `cancel`, `logs/stream`) are mounted only when the app is constructed with a `JobManager`; the read-only app omits them.
 
 ### Internal RPC Control Plane
 
@@ -93,6 +98,18 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 - Track step and job status
 - Store artifacts and provenance
 - Stop and clean up jobs on completion, timeout, cancellation, or crash
+
+### Job Manager
+
+**Responsibility**: Supervise background job execution for the control plane.
+
+**Technology**: anyio task group (as an async context manager).
+
+**Behavior**:
+
+- Owns the task group that runs triggered jobs in the background so a trigger HTTP request returns immediately while the job runs to completion.
+- The task group is owned here (not in FastAPI's lifespan) so the control plane behaves identically under `httpx.ASGITransport` (which skips lifespan) and uvicorn.
+- Wraps the `JobOrchestrator` for trigger, cancel, and job/log-path lookups used by the HTTP routes.
 
 ### Runner Interface
 
