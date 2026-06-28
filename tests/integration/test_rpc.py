@@ -197,11 +197,17 @@ async def test_capture_output_returns_streams() -> None:
 
 
 @test(mark="medium")
-async def test_get_secret_returns_authorized_value() -> None:
+async def test_get_secret_returns_pipeline_scoped_value() -> None:
     h = await load_fixture(harness())
 
     assert_eq(await h.danube().secrets.get("DEPLOY_TOKEN"), "tok-123")
-    # Global (pipeline-less) secrets are authorized too.
+
+
+@test(mark="medium")
+async def test_get_secret_returns_global_value() -> None:
+    h = await load_fixture(harness())
+
+    # Global (pipeline-less) secrets are authorized for every job.
     assert_eq(await h.danube().secrets.get("GLOBAL"), "glob")
 
 
@@ -249,6 +255,31 @@ async def test_rpc_for_closed_session_is_rejected() -> None:
         await h.danube().step.run("anything")
 
     assert_eq(caught.exception.status_code, 404)
+
+
+@test(mark="medium")
+async def test_rpc_for_inactive_job_is_rejected() -> None:
+    h = await load_fixture(harness())
+    # The session is still open, but the job has reached a terminal state.
+    _ = await h.danube().status.report("success")
+
+    with assert_raises(RpcError) as caught:
+        await h.danube().step.run("anything")
+
+    assert_eq(caught.exception.status_code, 404)
+
+
+@test(mark="medium")
+async def test_secret_in_command_is_scrubbed_from_record() -> None:
+    h = await load_fixture(harness())
+    leaky = "deploy --token tok-123"
+    h.runner.script_command(leaky, ExecResult(exit_code=0, stdout="", stderr=""))
+
+    _ = await h.danube().step.run(leaky)
+
+    steps = await _steps(h.db)
+    assert "tok-123" not in steps[0].command
+    assert "***" in steps[0].command
 
 
 @test(mark="medium")

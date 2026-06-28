@@ -13,9 +13,9 @@ are scrubbed from the captured output before it is written to the job log
 (Secrets Access), while the RPC response back to the Coordinator is left intact —
 it already holds the value it asked for.
 
-Scope per issue #8: real Worker exec is provided by the injected `Runner` (the
-`FakeRunner` in tests, Podman in issue #9); secret decryption is a pluggable hook
-that defaults to a UTF-8 decode of the stored ciphertext.
+Real Worker exec is provided by the injected `Runner` (the `FakeRunner` in tests,
+a Podman-backed runner in production); secret decryption is a pluggable hook that
+defaults to a UTF-8 decode of the stored ciphertext.
 """
 
 import hmac
@@ -51,7 +51,7 @@ _SECRET_MASK = "***"  # noqa: S105 - log redaction mask, not a credential
 
 
 def _default_decrypt(ciphertext: bytes) -> str:
-    """Minimal stand-in for real AES-256-GCM decryption (issue #8 out of scope).
+    """Minimal stand-in for real AES-256-GCM decryption (not yet wired up).
 
     Treats the stored ciphertext as UTF-8 plaintext so the control plane has a
     working secret path without pulling in the encryption key machinery yet.
@@ -151,7 +151,7 @@ class ControlPlane:
         mints a job-scoped token if one is not supplied, and returns the session.
         """
         resolved_token = token or secrets_module.token_urlsafe(32)
-        secret_values = await self._load_secrets(pipeline_id)
+        secret_values = await self._fetch_secrets(pipeline_id)
         log = LogWriter(self._log_path(job_id))
         _ = await log.__aenter__()
         session = JobSession(
@@ -175,22 +175,22 @@ class ControlPlane:
         self, job_id: str, token: str, request: RunStepRequest
     ) -> RunStepResponse:
         """Exec one command in the job's Worker, log scrubbed output, return code."""
-        session = self._authorize(job_id, token)
+        session = await self._authorize(job_id, token)
+        secret_values = list(session.secret_values.values())
         sequence = session.next_sequence()
         step_id = str(uuid.uuid4())
         name = request.name or f"step-{sequence}"
-        await self._begin_step(step_id, job_id, sequence, name, request.command)
+        # Scrub the command too: a secret inlined in the command string must not be
+        # persisted verbatim to the step record (Secrets Access, execution-model.md).
+        logged_command = scrub_secrets(request.command, secret_values)
+        await self._begin_step(step_id, job_id, sequence, name, logged_command)
 
         result = await self._runner.exec_step(
             session.handle,
-            ExecStepRequest(
-                command=request.command,
-                env=request.env,
-                timeout_seconds=request.timeout_seconds,
-            ),
+            ExecStepRequest(command=request.command, env=request.env),
         )
         combined = result.stdout + result.stderr
-        scrubbed = scrub_secrets(combined, list(session.secret_values.values()))
+        scrubbed = scrub_secrets(combined, secret_values)
         start, end = await session.log.write(scrubbed)
         await self._finish_step(step_id, result.exit_code, start, end)
 
@@ -202,7 +202,7 @@ class ControlPlane:
 
     async def get_secret(self, job_id: str, token: str, key: str) -> str:
         """Return an authorized secret value, or raise `SecretNotAuthorizedError`."""
-        session = self._authorize(job_id, token)
+        session = await self._authorize(job_id, token)
         value = session.secret_values.get(key)
         if value is None:
             # Do not reveal whether the key exists for another pipeline.
@@ -218,7 +218,7 @@ class ControlPlane:
         Coordinator-reported `path`/`size_bytes` are persisted so the artifact is
         tracked and downloadable metadata exists.
         """
-        session = self._authorize(job_id, token)
+        session = await self._authorize(job_id, token)
         artifact_id = str(uuid.uuid4())
         destination = ARTIFACT_ROOT / job_id / name
         logger.info("job %s uploaded artifact %r from %s", session.job_id, name, path)
@@ -246,7 +246,7 @@ class ControlPlane:
         The move is validated through `danube.domain.lifecycle`, so an illegal
         transition raises `InvalidTransition` (mapped to 409 by the route).
         """
-        _ = self._authorize(job_id, token)
+        _ = await self._authorize(job_id, token)
         async with self._db.transaction() as tx:
             job = await tx.fetch_one(select(Job).where(Job.id.eq(job_id)))
             new = transition(JobStatus(job.status), state)
@@ -260,15 +260,22 @@ class ControlPlane:
             _ = await tx.execute(query.where(Job.id.eq(job_id)))
         return ReportStatusResponse(status=new)
 
-    def _authorize(self, job_id: str, token: str) -> JobSession:
+    async def _authorize(self, job_id: str, token: str) -> JobSession:
         session = self._sessions.get(job_id)
         if session is None:
             raise SessionNotActiveError(job_id)
         if not hmac.compare_digest(session.token, token):
             raise InvalidTokenError(job_id)
+        # An open session is not enough: the job must still be active in the DB
+        # (a job that reached a terminal state rejects further RPCs), per the
+        # Master's "job is active" check in execution-model.md (Secrets Access).
+        async with self._db.transaction() as tx:
+            job = await tx.fetch_one(select(Job).where(Job.id.eq(job_id)))
+        if JobStatus(job.status) in _TERMINAL_STATES:
+            raise SessionNotActiveError(job_id)
         return session
 
-    async def _load_secrets(self, pipeline_id: str) -> dict[str, str]:
+    async def _fetch_secrets(self, pipeline_id: str) -> dict[str, str]:
         """Load the pipeline's secrets plus global (pipeline-less) secrets."""
         async with self._db.transaction() as tx:
             rows = await tx.fetch_all(

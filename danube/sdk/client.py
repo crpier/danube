@@ -85,6 +85,7 @@ def _detail(response: httpx.Response) -> str:
     except ValueError:
         return response.text
     if isinstance(body, dict):
+        # Safe: guarded by the isinstance check above; JSON object keys are str.
         mapping = cast("dict[str, object]", body)
         if "detail" in mapping:
             return str(mapping["detail"])
@@ -116,24 +117,24 @@ class StepApi:
 
     async def run(
         self,
-        command: str,
+        cmd: str,
         *,
         env: dict[str, str] | None = None,
         check: bool = True,
         name: str | None = None,
     ) -> int:
-        """Run ``command`` in the Worker and return its exit code.
+        """Run ``cmd`` in the Worker and return its exit code.
 
         With ``check=True`` (the default) a non-zero exit raises `StepError`; with
         ``check=False`` the exit code is returned and the pipeline continues.
         """
         data = await self._client.post(
             "/rpc/run-step",
-            {"command": command, "env": env or {}, "name": name},
+            {"command": cmd, "env": env or {}, "name": name},
         )
         exit_code = int(data["exit_code"])
         if check and exit_code != 0:
-            raise StepError(command, exit_code)
+            raise StepError(cmd, exit_code)
         return exit_code
 
     async def capture(

@@ -33,7 +33,6 @@ class RunStepRequest(_Request):
     # When false (the default) the Master writes output only to the job log; when
     # true the captured stdout/stderr are also returned in the response.
     capture_output: bool = False
-    timeout_seconds: int | None = Field(default=None, gt=0)
 
 
 class RunStepResponse(BaseModel):
