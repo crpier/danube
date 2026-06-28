@@ -7,16 +7,29 @@ own database. The bare `get_db` is never executed in practice; it exists only as
 the dependency key and fails loudly if wiring is missing.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import Depends, Query
-from snekql.sqlite import Database
+from fastapi import Depends, Header, HTTPException, Query, status
+from snekql.sqlite import Database, NoResultError, select
 
+from danube.auth import (
+    AuthConfig,
+    JwtError,
+    Principal,
+    pipeline_permission_ok,
+    resolve_principal,
+    verify,
+)
+from danube.db.models import Job
+from danube.domain.enums import PermissionLevel
 from danube.observability import Metrics, Tracer
 from danube.orchestrator import JobManager
 from danube.runner.base import Runner
 from danube.webhooks import WebhookConfig
+
+_audit_logger = logging.getLogger("danube.auth")
 
 # Bound the page size so a client cannot ask for an unbounded result set.
 MAX_PAGE_LIMIT = 200
@@ -118,3 +131,146 @@ def page_params(
 
 
 PageDep = Annotated[PageParams, Depends(page_params)]
+
+
+# --- authentication & authorization -----------------------------------------
+
+
+def get_auth_config() -> AuthConfig | None:
+    """Dependency key for the optional UI/API auth configuration.
+
+    Returns `None` (auth disabled) unless `create_app` was given an
+    `AuthConfig`, in which case the override returns it. A `None` config makes
+    every auth dependency a no-op, which keeps the read-only/in-process test apps
+    unauthenticated.
+    """
+    return None
+
+
+AuthConfigDep = Annotated["AuthConfig | None", Depends(get_auth_config)]
+
+
+def _bearer_token(authorization: str | None) -> str:
+    prefix = "Bearer "
+    if authorization is None or not authorization.startswith(prefix):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing or malformed bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return authorization.removeprefix(prefix)
+
+
+async def current_principal(
+    auth_config: AuthConfigDep,
+    db: DbDep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Principal | None:
+    """Resolve the caller's `Principal`, or `None` when auth is disabled.
+
+    With auth enabled: a missing/malformed token or a token that fails JWT
+    validation (signature, expiry, issuer, audience) is a 401. A valid token that
+    maps to no Blueprint user yields a zero-permission principal (so RBAC denies
+    it with a 403) rather than a 401 -- the caller authenticated, they just are
+    not authorized.
+    """
+    if auth_config is None:
+        return None
+    token = _bearer_token(authorization)
+    try:
+        claims = verify(token, auth_config)
+    except JwtError as error:
+        _audit_logger.info(
+            "auth_rejected",
+            extra={"event": "auth_rejected", "reason": str(error)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None
+    principal = await resolve_principal(db, claims)
+    if principal is None:
+        return Principal(
+            user_id="",
+            email=claims.email or claims.subject,
+            is_global_admin=False,
+            team_ids=frozenset(),
+        )
+    return principal
+
+
+PrincipalDep = Annotated["Principal | None", Depends(current_principal)]
+
+
+def _deny(principal: Principal, resource: str, required: PermissionLevel) -> None:
+    _audit_logger.info(
+        "auth_permission_denied",
+        extra={
+            "event": "auth_permission_denied",
+            "user": principal.email or principal.user_id,
+            "resource": resource,
+            "required_level": str(required),
+        },
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="insufficient permission for this resource",
+    )
+
+
+async def _enforce_pipeline(
+    db: Database,
+    principal: Principal | None,
+    pipeline_id: str,
+    required: PermissionLevel,
+) -> None:
+    if principal is None:
+        return
+    if not await pipeline_permission_ok(db, principal, pipeline_id, required):
+        _deny(principal, f"pipeline:{pipeline_id}", required)
+
+
+async def _job_pipeline_id(db: Database, job_id: str) -> str | None:
+    async with db.transaction() as tx:
+        try:
+            return await tx.fetch_one(select(Job.pipeline_id).where(Job.id.eq(job_id)))
+        except NoResultError:
+            return None
+
+
+async def _enforce_job(
+    db: Database,
+    principal: Principal | None,
+    job_id: str,
+    required: PermissionLevel,
+) -> None:
+    if principal is None:
+        return
+    pipeline_id = await _job_pipeline_id(db, job_id)
+    # An unknown job is left to the route, which answers 404; not leaking that a
+    # job exists is already covered because no permission row can match it.
+    if pipeline_id is None:
+        return
+    if not await pipeline_permission_ok(db, principal, pipeline_id, required):
+        _deny(principal, f"job:{job_id}", required)
+
+
+async def require_pipeline_read(
+    pipeline_id: str, principal: PrincipalDep, db: DbDep
+) -> None:
+    await _enforce_pipeline(db, principal, pipeline_id, PermissionLevel.READ)
+
+
+async def require_pipeline_write(
+    pipeline_id: str, principal: PrincipalDep, db: DbDep
+) -> None:
+    await _enforce_pipeline(db, principal, pipeline_id, PermissionLevel.WRITE)
+
+
+async def require_job_read(job_id: str, principal: PrincipalDep, db: DbDep) -> None:
+    await _enforce_job(db, principal, job_id, PermissionLevel.READ)
+
+
+async def require_job_write(job_id: str, principal: PrincipalDep, db: DbDep) -> None:
+    await _enforce_job(db, principal, job_id, PermissionLevel.WRITE)

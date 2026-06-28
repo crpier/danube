@@ -16,10 +16,15 @@ import json
 from collections.abc import AsyncGenerator
 
 import anyio
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from danube.api.deps import JobManagerDep
+from danube.api.deps import (
+    JobManagerDep,
+    require_job_read,
+    require_job_write,
+    require_pipeline_write,
+)
 from danube.api.schemas import JobResponse, RunPipelineRequest
 from danube.domain.enums import JobStatus, TriggerType
 from danube.domain.lifecycle import TERMINAL_STATES
@@ -36,7 +41,11 @@ router = APIRouter(tags=["control"])
 _LOG_POLL_INTERVAL_SECONDS = 0.1
 
 
-@router.post("/pipelines/{pipeline_id}/run", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/pipelines/{pipeline_id}/run",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_pipeline_write)],
+)
 async def run_pipeline(
     pipeline_id: str,
     manager: JobManagerDep,
@@ -53,7 +62,11 @@ async def run_pipeline(
     return JobResponse.model_validate(job)
 
 
-@router.post("/jobs/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/jobs/{job_id}/cancel",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_job_write)],
+)
 async def cancel_job(job_id: str, manager: JobManagerDep) -> JobResponse:
     """Request cancellation of a running job; returns its current snapshot."""
     try:
@@ -69,7 +82,7 @@ async def cancel_job(job_id: str, manager: JobManagerDep) -> JobResponse:
     return JobResponse.model_validate(job)
 
 
-@router.get("/jobs/{job_id}/logs/stream")
+@router.get("/jobs/{job_id}/logs/stream", dependencies=[Depends(require_job_read)])
 async def stream_logs(job_id: str, manager: JobManagerDep) -> StreamingResponse:
     """Stream a job's log as Server-Sent Events: replay, then tail to terminal."""
     try:

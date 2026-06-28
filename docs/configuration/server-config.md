@@ -53,6 +53,21 @@ registry_address = "127.0.0.1:5000"
 github_secret = ""
 gitlab_token = ""
 
+[auth]
+# UI/API authentication and team-based RBAC. Disabled by default; set
+# `enabled = true` to require a valid JWT on the read and control endpoints.
+# Health and metrics endpoints are never gated by auth.
+enabled = false
+issuer = "https://idp.example.com"   # expected `iss` claim
+audience = "danube"                  # expected `aud` claim
+algorithm = "HS256"                  # "HS256" (shared secret) or "RS256" (OIDC public key)
+# HS256: the shared signing secret. This is also the "embedded IdP" path — Danube
+# both mints and verifies tokens with this secret for single-host setups.
+hs256_secret = ""
+# RS256: the identity provider's public key, inline PEM or a path to a PEM file.
+public_key = "/var/lib/danube/keys/oidc_public.pem"
+leeway_seconds = 0                   # clock-skew tolerance (non-negative integer) applied to expiry
+
 [database]
 path = "/var/lib/danube/danube.db"
 
@@ -77,6 +92,13 @@ export DANUBE_CONFIG_REPO_URL="git@github.com:myorg/danube-blueprint.git"
 export DANUBE_CONFIG_REPO_BRANCH="main"
 export DANUBE_RUNNER_RUNTIME="podman"
 export DANUBE_LOG_LEVEL="debug"
+export DANUBE_AUTH_ENABLED="true"
+export DANUBE_AUTH_ISSUER="https://idp.example.com"
+export DANUBE_AUTH_AUDIENCE="danube"
+export DANUBE_AUTH_ALGORITHM="HS256"
+export DANUBE_AUTH_HS256_SECRET="..."
+export DANUBE_AUTH_PUBLIC_KEY="/var/lib/danube/keys/oidc_public.pem"
+export DANUBE_AUTH_LEEWAY_SECONDS="0"
 ```
 
 Environment variables override config file values.
