@@ -6,7 +6,7 @@ serves the FastAPI app with uvicorn at the configured bind address.
 
 import argparse
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import anyio
@@ -17,6 +17,12 @@ from snekql.sqlite import Database
 from danube import __version__
 from danube.api import create_app
 from danube.db import open_database
+from danube.observability import (
+    Metrics,
+    ObservabilityConfig,
+    Tracer,
+    configure_logging,
+)
 
 logger = logging.getLogger("danube.master")
 
@@ -37,16 +43,19 @@ class MasterConfig:
     config_path: Path | None
     bind_address: str = DEFAULT_BIND_ADDRESS
     database_path: Path | str = DEFAULT_DATABASE_PATH
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
 
 def load_config(config_path: Path | None) -> MasterConfig:
     """Load Master configuration from the given path.
 
     Stubbed for now: only the path is retained and defaults are used for the
-    bind address and database location. Real parsing arrives with the
-    server-config issue.
+    bind address and database location. Observability toggles come from the
+    environment until full server-config parsing arrives.
     """
-    return MasterConfig(config_path=config_path)
+    return MasterConfig(
+        config_path=config_path, observability=ObservabilityConfig.from_env()
+    )
 
 
 def _split_bind_address(bind_address: str) -> tuple[str, int]:
@@ -68,7 +77,11 @@ async def build_app(config: MasterConfig) -> tuple[FastAPI, Database]:
     database lifetime (and can close it on shutdown).
     """
     db = await open_database(config.database_path)
-    return create_app(db), db
+    tracer = Tracer(
+        enabled=config.observability.traces_enabled,
+        endpoint=config.observability.otel_endpoint,
+    )
+    return create_app(db, metrics=Metrics(), tracer=tracer), db
 
 
 async def serve(config: MasterConfig) -> None:
@@ -81,13 +94,6 @@ async def serve(config: MasterConfig) -> None:
         await server.serve()
     finally:
         await db.close()
-
-
-def configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

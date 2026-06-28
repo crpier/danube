@@ -91,7 +91,7 @@ async def test_ready_reports_database_up() -> None:
     response = await http_client.get("/health/ready")
 
     assert_eq(response.status_code, 200)
-    assert_eq(response.json(), {"status": "ready", "database": True})
+    assert_eq(response.json(), {"status": "ready", "checks": {"database": "ok"}})
 
 
 @test(mark="medium")
@@ -103,7 +103,9 @@ async def test_ready_reports_503_when_database_down() -> None:
     response = await http_client.get("/health/ready")
 
     assert_eq(response.status_code, 503)
-    assert_eq(response.json(), {"status": "unavailable", "database": False})
+    assert_eq(
+        response.json(), {"status": "unavailable", "checks": {"database": "error"}}
+    )
 
 
 @test(mark="medium")

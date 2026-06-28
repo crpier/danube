@@ -1,5 +1,30 @@
 # Observability
 
+## Implementation notes
+
+Metrics and tracing are implemented in-house (`danube.observability`) rather than
+via `prometheus_client`/the OpenTelemetry SDK, to stay consistent with the
+project's dependency-free, strictly-typed tooling (snekql, snektest):
+
+- **Metrics**: a small registry (`Metrics`/`Registry`) renders the documented
+  series in the Prometheus text exposition format (version 0.0.4) at `GET
+  /metrics`. The registry is dependency-injected, so the orchestrator records into
+  the same registry the endpoint renders. Series without instrumentation points
+  yet (e.g. the DB metrics) are exposed at their zero value.
+- **Tracing**: `Tracer.span` models an OpenTelemetry span (name + attributes +
+  duration), gated by `observability.traces_enabled`. It is a true no-op when
+  disabled; when enabled it emits spans as DEBUG log records. `otel_endpoint` is
+  recorded as the future OTLP-export hook — enabling tracing never touches the
+  network, so no collector is required.
+- **Readiness**: `GET /health/ready` currently probes `database`, and (when a
+  runner is wired) `runner` and `container_runtime`. `blueprint_sync` and `disk`
+  checks land with their components.
+
+Configuration toggles come from `spec.observability` (or, until full
+server-config parsing lands, the `DANUBE_METRICS_ENABLED`/`DANUBE_TRACES_ENABLED`/
+`DANUBE_OTEL_ENDPOINT` environment variables). The log level is set by
+`DANUBE_LOG_LEVEL`.
+
 ## Logging
 
 ### Master Logs

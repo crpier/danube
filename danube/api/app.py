@@ -14,24 +14,99 @@ SPA serving live in later issues.
 
 from fastapi import FastAPI
 from snekql.sqlite import Database
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from danube import __version__
-from danube.api.deps import get_db, get_job_manager, get_webhook_config
-from danube.api.routes import artifacts, control, health, jobs, pipelines, webhooks
+from danube.api.deps import (
+    get_db,
+    get_job_manager,
+    get_metrics,
+    get_runner,
+    get_tracer,
+    get_webhook_config,
+)
+from danube.api.routes import (
+    artifacts,
+    control,
+    health,
+    jobs,
+    pipelines,
+    webhooks,
+)
+from danube.api.routes import (
+    metrics as metrics_route,
+)
+from danube.observability import Metrics, Tracer
 from danube.orchestrator import JobManager
 from danube.rpc import ControlPlane
 from danube.rpc import router as rpc_router
 from danube.rpc.deps import get_control_plane
+from danube.runner.base import Runner
 from danube.webhooks import WebhookConfig
 
 API_V1_PREFIX = "/api/v1"
 
 
-def create_app(
+class _TracingMiddleware:
+    """Pure-ASGI middleware that wraps each HTTP request in a tracing span.
+
+    Implemented as raw ASGI (not Starlette's `BaseHTTPMiddleware`) deliberately:
+    `BaseHTTPMiddleware` spawns a per-request task group that interferes with the
+    background job/DB lifecycle. A plain ASGI wrapper just brackets the downstream
+    call, so it is a true no-op when the tracer is disabled.
+    """
+
+    def __init__(self, app: ASGIApp, tracer: Tracer) -> None:
+        self._app = app
+        self._tracer = tracer
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        method = scope.get("method", "")
+        path = scope.get("path", "")
+        with self._tracer.span(
+            f"{method} {path}",
+            **{"http.method": method, "http.target": path},
+        ):
+            await self._app(scope, receive, send)
+
+
+def _wire_observability(
+    app: FastAPI, metrics: Metrics, tracer: Tracer, runner: Runner | None
+) -> None:
+    """Inject the metrics/tracer dependencies, the trace middleware, and (when a
+    runner is supplied) the readiness runner."""
+
+    def provide_metrics() -> Metrics:
+        return metrics
+
+    def provide_tracer() -> Tracer:
+        return tracer
+
+    app.dependency_overrides[get_metrics] = provide_metrics
+    app.dependency_overrides[get_tracer] = provide_tracer
+
+    if runner is not None:
+
+        def provide_runner() -> Runner | None:
+            return runner
+
+        app.dependency_overrides[get_runner] = provide_runner
+
+    app.add_middleware(_TracingMiddleware, tracer=tracer)
+
+
+def create_app(  # noqa: PLR0913 - factory wiring each optional subsystem explicitly
     db: Database,
     control_plane: ControlPlane | None = None,
     job_manager: JobManager | None = None,
     webhook_config: WebhookConfig | None = None,
+    *,
+    metrics: Metrics | None = None,
+    tracer: Tracer | None = None,
+    runner: Runner | None = None,
 ) -> FastAPI:
     """Build the FastAPI app, injecting `db` as the request-scoped database.
 
@@ -48,8 +123,10 @@ def create_app(
         return db
 
     app.dependency_overrides[get_db] = provide_db
+    _wire_observability(app, metrics or Metrics(), tracer or Tracer(), runner)
 
     app.include_router(health.router)
+    app.include_router(metrics_route.router)
     app.include_router(jobs.router, prefix=API_V1_PREFIX)
     app.include_router(pipelines.router, prefix=API_V1_PREFIX)
     app.include_router(artifacts.router, prefix=API_V1_PREFIX)

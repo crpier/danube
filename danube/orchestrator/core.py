@@ -32,7 +32,9 @@ environment exists, on every path.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +54,7 @@ from danube.db.models import Job, Pipeline
 from danube.domain.enums import JobStatus, TriggerType
 from danube.domain.lifecycle import ALLOWED_TRANSITIONS, TERMINAL_STATES, transition
 from danube.domain.runner_types import CoordinatorExit, JobHandle, StartJobRequest
+from danube.observability import Metrics, Tracer, job_log_fields
 from danube.runner.base import Runner
 from danube.sdk.client import ENV_JOB_ID, ENV_RPC_ADDRESS, ENV_RPC_TOKEN
 
@@ -114,7 +117,7 @@ class _RunningJob:
 class JobOrchestrator:
     """Persist and run jobs against a `Runner`, a `ControlPlane`, and a database."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - wires the runner, DB, control plane, and telemetry
         self,
         runner: Runner,
         db: Database,
@@ -122,6 +125,8 @@ class JobOrchestrator:
         control_plane: ControlPlane,
         *,
         rpc_address: str,
+        metrics: Metrics | None = None,
+        tracer: Tracer | None = None,
     ) -> None:
         self._runner = runner
         self._db = db
@@ -129,6 +134,8 @@ class JobOrchestrator:
         self._control_plane = control_plane
         self._rpc_address = rpc_address
         self._running: dict[str, _RunningJob] = {}
+        self._metrics = metrics or Metrics()
+        self._tracer = tracer or Tracer()
 
     @property
     def db(self) -> Database:
@@ -185,26 +192,41 @@ class JobOrchestrator:
         """
         running = _RunningJob()
         self._running[job_id] = running
+        self._metrics.active_jobs.inc()
+        started = time.monotonic()
         try:
-            return await self._drive_job(job_id, running)
+            with self._tracer.span(f"job {job_id}", job_id=job_id):
+                job = await self._drive_job(job_id, running)
+            # Recorded only on a clean return (using the terminal row `_drive_job`
+            # already read back), so no DB work runs on the cancellation path that
+            # the scheduler unwinds at shutdown.
+            self._record_terminal_metrics(job, time.monotonic() - started)
+            return job
         finally:
             _ = self._running.pop(job_id, None)
+            self._metrics.active_jobs.dec()
 
     async def _drive_job(self, job_id: str, running: _RunningJob) -> Job[Fetched]:
         """Drive a registered job to a terminal state. See `run_job`."""
         job = await self._fetch_job(job_id)
         pipeline = await self._fetch_pipeline(job.pipeline_id)
+        log_fields = job_log_fields(job)
+        logger.info("job_started", extra={"event": "job_started", **log_fields})
 
         await self._advance(job_id, JobStatus.SCHEDULING)
         try:
-            handle = await self._runner.start_job(
-                StartJobRequest(
-                    job_id=job_id,
-                    pipeline_id=job.pipeline_id,
-                    worker_image=pipeline.worker_image,
-                    max_duration_seconds=pipeline.max_duration_seconds,
+            with self._tracer.span("runner start environment", job_id=job_id):
+                handle = await self._timed_runner_op(
+                    "start",
+                    self._runner.start_job(
+                        StartJobRequest(
+                            job_id=job_id,
+                            pipeline_id=job.pipeline_id,
+                            worker_image=pipeline.worker_image,
+                            max_duration_seconds=pipeline.max_duration_seconds,
+                        )
+                    ),
                 )
-            )
         except Exception as e:
             # No environment exists yet, so there is nothing to clean up here;
             # the reaper later reconciles any stale runtime state.
@@ -215,6 +237,8 @@ class JobOrchestrator:
             )
             reason = f"runner failed to create job environment: {e}"
             return await self._finalize(job_id, JobStatus.FAILURE, reason)
+
+        self._metrics.runner_containers_active.inc()
 
         running.handle = handle
         log_path = self._log_path(job_id)
@@ -239,7 +263,8 @@ class JobOrchestrator:
                 await self._advance(job_id, JobStatus.RUNNING)
                 with anyio.fail_after(pipeline.max_duration_seconds):
                     await self._runner.start_coordinator(handle, coordinator_env)
-                    exit_info = await self._runner.wait_for_coordinator(handle)
+                    with self._tracer.span("wait for coordinator", job_id=job_id):
+                        exit_info = await self._runner.wait_for_coordinator(handle)
                 final, reason = self._outcome(exit_info)
             if scope.cancelled_caught:
                 # Cancellation unwound the wait but did not stop the containers;
@@ -261,9 +286,47 @@ class JobOrchestrator:
             logger.warning("job %s failed: %s", job_id, reason)
         finally:
             await self._control_plane.close_session(job_id)
-            await self._runner.cleanup_job(handle)
+            await self._cleanup(handle)
 
         return await self._finalize_unless_terminal(job_id, final, reason)
+
+    async def _timed_runner_op[T](self, operation: str, awaitable: Awaitable[T]) -> T:
+        """Await a runner operation, recording its duration and success/error.
+
+        Re-raises any exception after recording the `error` outcome so the
+        orchestrator's existing failure handling is unchanged.
+        """
+        start = time.monotonic()
+        try:
+            result = await awaitable
+        except Exception:
+            self._metrics.runner_operations_total.inc(
+                operation=operation, status="error"
+            )
+            raise
+        else:
+            self._metrics.runner_operations_total.inc(
+                operation=operation, status="success"
+            )
+            return result
+        finally:
+            self._metrics.runner_operation_duration_seconds.observe(
+                time.monotonic() - start, operation=operation
+            )
+
+    async def _cleanup(self, handle: JobHandle) -> None:
+        """Clean up the job environment, instrumenting the runner operation.
+
+        A cleanup failure is recorded (and the container gauge still decremented)
+        but re-raised so the existing finally-path semantics are preserved.
+        """
+        self._metrics.runner_containers_active.dec()
+        try:
+            with self._tracer.span("runner cleanup", job_id=handle.job_id):
+                await self._timed_runner_op("cleanup", self._runner.cleanup_job(handle))
+        except Exception:
+            self._metrics.runner_cleanup_failures_total.inc()
+            raise
 
     async def request_cancel(
         self, job_id: str, reason: str = "job cancelled by user"
@@ -314,6 +377,28 @@ class JobOrchestrator:
         return (
             JobStatus.FAILURE,
             f"coordinator exited with code {exit_info.exit_code}",
+        )
+
+    def _record_terminal_metrics(self, job: Job[Fetched], duration: float) -> None:
+        """Record terminal job metrics and emit the `job_finished` log.
+
+        Takes the terminal job row `_drive_job` returns — which already reflects a
+        Coordinator-reported status set over RPC — so no extra DB query is needed.
+        """
+        status = JobStatus(job.status)
+        pipeline = job.pipeline_id
+        self._metrics.jobs_total.inc(status=status.value, pipeline=pipeline)
+        self._metrics.job_duration_seconds.observe(duration, pipeline=pipeline)
+        if status is JobStatus.TIMEOUT:
+            self._metrics.job_timeouts_total.inc(pipeline=pipeline)
+        logger.info(
+            "job_finished",
+            extra={
+                "event": "job_finished",
+                "status": status.value,
+                "duration_seconds": duration,
+                **job_log_fields(job),
+            },
         )
 
     async def _fetch_job(self, job_id: str) -> Job[Fetched]:
