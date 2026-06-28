@@ -50,7 +50,7 @@ from snekql.sqlite import (
 
 from danube.db.models import Job, Pipeline
 from danube.domain.enums import JobStatus, TriggerType
-from danube.domain.lifecycle import TERMINAL_STATES, transition
+from danube.domain.lifecycle import ALLOWED_TRANSITIONS, TERMINAL_STATES, transition
 from danube.domain.runner_types import CoordinatorExit, JobHandle, StartJobRequest
 from danube.runner.base import Runner
 from danube.sdk.client import ENV_JOB_ID, ENV_RPC_ADDRESS, ENV_RPC_TOKEN
@@ -270,8 +270,10 @@ class JobOrchestrator:
         job = await self.fetch_job(job_id)
         current = JobStatus(job.status)
         running = self._running.get(job_id)
+        # `cancelled` is only a legal target from `running` per the lifecycle state
+        # machine, and only a `running` job has a live cancel scope to unwind.
         if (
-            current is not JobStatus.RUNNING
+            JobStatus.CANCELLED not in ALLOWED_TRANSITIONS[current]
             or running is None
             or running.cancel_scope is None
         ):

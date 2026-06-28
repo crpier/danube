@@ -83,6 +83,23 @@ async def stream_logs(job_id: str, manager: JobManagerDep) -> StreamingResponse:
     )
 
 
+def _consume_log_lines(buffer: bytes, *, flush: bool) -> tuple[list[str], int]:
+    """Split `buffer` into whole log lines and report how many bytes were consumed.
+
+    Only bytes up to (and including) the final newline are consumed, so a line —
+    or a multibyte UTF-8 character — split across a read boundary is left in the
+    file for the next read instead of being emitted as a partial `data:` frame or
+    crashing the decode. When `flush` is set (the job is terminal and the writer
+    has closed the file) any trailing bytes without a final newline are consumed
+    and emitted as a last line. `errors="replace"` is defensive: complete lines
+    are valid UTF-8, but a malformed byte must not kill the stream.
+    """
+    consumed = len(buffer) if flush else buffer.rfind(b"\n") + 1
+    if consumed <= 0:
+        return [], 0
+    return buffer[:consumed].decode("utf-8", errors="replace").splitlines(), consumed
+
+
 async def _log_events(manager: JobManager, job_id: str) -> AsyncGenerator[str]:
     """Yield SSE `data:` frames for each log line, ending once the job is terminal.
 
@@ -99,8 +116,9 @@ async def _log_events(manager: JobManager, job_id: str) -> AsyncGenerator[str]:
             async with await anyio.open_file(path, "rb") as handle:
                 _ = await handle.seek(offset)
                 chunk = await handle.read()
-            offset += len(chunk)
-            for line in chunk.decode("utf-8").splitlines():
+            lines, consumed = _consume_log_lines(chunk, flush=terminal)
+            offset += consumed
+            for line in lines:
                 yield f"data: {line}\n\n"
         if terminal:
             payload = json.dumps({"status": str(job.status)})
