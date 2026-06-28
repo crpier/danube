@@ -27,6 +27,7 @@ from danube.domain.runner_types import JobHandle, StartJobRequest
 from danube.orchestrator import JobOrchestrator, LogWriter, LogWriterError
 from danube.rpc import ControlPlane
 from danube.runner import FakeRunner, RecordedCall
+from danube.security import SecretCipher, SecretService, generate_key
 
 RPC_ADDRESS = "http://master.test:9000"
 
@@ -82,7 +83,12 @@ async def _make_env(runner: FakeRunner) -> AsyncGenerator[Env]:
         async with db.transaction() as tx:
             await tx.execute(insert(Team(id="t1", name="team", global_admin=False)))
         await _seed_pipeline(db, "p1")
-        control_plane = ControlPlane(runner, db, data_dir)
+        control_plane = ControlPlane(
+            runner,
+            db,
+            data_dir,
+            secret_service=SecretService(db, SecretCipher(generate_key())),
+        )
         orchestrator = JobOrchestrator(
             runner, db, data_dir, control_plane, rpc_address=RPC_ADDRESS
         )

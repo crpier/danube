@@ -26,10 +26,14 @@ from danube.domain.runner_types import ExecResult, StartJobRequest
 from danube.rpc import ControlPlane
 from danube.runner import FakeRunner
 from danube.sdk import DanubeClient, RpcError, StepError
+from danube.security import SecretCipher, SecretService, generate_key
 from examples.danubefile import pipeline
 
 JOB_ID = "j1"
 TOKEN = "job-token-abc"
+# One cipher shared by the seed (encrypt) and the SecretService (decrypt) so the
+# stored blobs are real AES-256-GCM ciphertext rather than plaintext.
+_CIPHER = SecretCipher(generate_key())
 
 
 async def _seed(db: Database) -> None:
@@ -54,7 +58,7 @@ async def _seed(db: Database) -> None:
                     id="s1",
                     pipeline_id="p1",
                     key="DEPLOY_TOKEN",
-                    value_encrypted=b"tok-123",
+                    value_encrypted=_CIPHER.encrypt("tok-123"),
                 )
             )
         )
@@ -65,7 +69,7 @@ async def _seed(db: Database) -> None:
                     id="s2",
                     pipeline_id="p2",
                     key="OTHER_SECRET",
-                    value_encrypted=b"nope",
+                    value_encrypted=_CIPHER.encrypt("nope"),
                 )
             )
         )
@@ -76,7 +80,7 @@ async def _seed(db: Database) -> None:
                     id="s3",
                     pipeline_id=None,
                     key="GLOBAL",
-                    value_encrypted=b"glob",
+                    value_encrypted=_CIPHER.encrypt("glob"),
                 )
             )
         )
@@ -111,7 +115,9 @@ class Harness:
 async def _make_harness(runner: FakeRunner) -> AsyncGenerator[Harness]:
     data_dir = Path(tempfile.mkdtemp(prefix="danube-rpc-"))
     db = await open_database(":memory:")
-    control_plane = ControlPlane(runner, db, data_dir)
+    control_plane = ControlPlane(
+        runner, db, data_dir, secret_service=SecretService(db, _CIPHER)
+    )
     try:
         await _seed(db)
         handle = await runner.start_job(

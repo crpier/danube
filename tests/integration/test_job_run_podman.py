@@ -53,6 +53,7 @@ from danube.runner.podman import (
     build_async_client,
     socket_available,
 )
+from danube.security import SecretCipher, SecretService, generate_key
 
 WORKER_IMAGE = "docker.io/library/busybox:latest"
 COORDINATOR_IMAGE = "docker.io/library/python:3.14-slim"
@@ -176,7 +177,12 @@ async def _run_danubefile(
         ),
     )
     runner = LocalContainerRunner(adapter, data_dir, db=db, config=config)
-    control_plane = ControlPlane(runner, db, data_dir)
+    control_plane = ControlPlane(
+        runner,
+        db,
+        data_dir,
+        secret_service=SecretService(db, SecretCipher(generate_key())),
+    )
     app = create_app(db, control_plane=control_plane)
     orchestrator = JobOrchestrator(
         runner, db, data_dir, control_plane, rpc_address=rpc_address
