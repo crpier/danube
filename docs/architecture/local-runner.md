@@ -91,6 +91,8 @@ The Master should depend on a runner interface similar to:
 class Runner:
     async def start_job(self, request: StartJobRequest) -> JobHandle: ...
     async def exec_step(self, job: JobHandle, request: ExecStepRequest) -> ExecResult: ...
+    async def start_coordinator(self, job: JobHandle, env: Mapping[str, str]) -> None: ...
+    async def wait_for_coordinator(self, job: JobHandle) -> CoordinatorExit: ...
     async def stop_job(self, job: JobHandle, reason: str) -> None: ...
     async def cleanup_job(self, job: JobHandle) -> None: ...
     async def reconcile(self) -> ReconcileReport: ...
@@ -98,6 +100,17 @@ class Runner:
 ```
 
 The runner interface should expose Danube concepts, not Podman concepts.
+
+`start_job` creates the pod with both containers idling. The Master then opens the
+job's RPC session and calls `start_coordinator`, which launches the Coordinator
+entrypoint (`python -m danube.coordinator`) with the SDK connection environment
+(`DANUBE_RPC_ADDRESS`, `DANUBE_JOB_ID`, `DANUBE_RPC_TOKEN`). `wait_for_coordinator`
+blocks until that process exits and reports its `CoordinatorExit` (the exit code is
+the crash signal when no terminal `/rpc/report-status` arrived). In the
+`LocalContainerRunner` these are a Podman exec of the entrypoint in the Coordinator
+container; the Coordinator drives Worker steps only over the Master RPC, never
+directly. Because the Master's RPC is already serving before `start_coordinator`,
+Coordinator readiness needs no separate handshake.
 
 ## Execution Flow
 
@@ -108,14 +121,18 @@ The runner interface should expose Danube concepts, not Podman concepts.
 4. Runner creates Podman pod with Danube labels
 5. Runner creates Worker container in pod
 6. Runner creates Coordinator container in pod
-7. Runner starts containers
-8. Coordinator calls Master RPC
-9. Master calls Runner.exec_step
-10. Runner creates Podman exec session in Worker
-11. Runner streams stdout/stderr to Master
-12. Master records step result
-13. Master calls Runner.cleanup_job when job ends
-14. Runner removes pod, containers, temporary network state, and workspace
+7. Runner starts containers (both idle)
+8. Master opens the RPC session and calls Runner.start_coordinator
+9. Runner launches `python -m danube.coordinator` with the SDK connection env
+10. Master calls Runner.wait_for_coordinator and blocks on the pipeline
+11. Coordinator imports danubefile.py and calls Master RPC per step
+12. Master calls Runner.exec_step
+13. Runner creates Podman exec session in Worker
+14. Runner streams stdout/stderr to Master
+15. Master records step result
+16. Coordinator exits; wait_for_coordinator returns its exit code
+17. Master calls Runner.cleanup_job when job ends
+18. Runner removes pod, containers, temporary network state, and workspace
 ```
 
 ## Security Defaults

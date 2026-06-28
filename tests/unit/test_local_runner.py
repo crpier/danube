@@ -26,7 +26,11 @@ from danube.runner.local import (
     LABEL_MANAGED,
     LABEL_PIPELINE_ID,
     LABEL_RESOURCE,
+    RESOURCE_COORDINATOR,
+    RESOURCE_WORKER,
+    CoordinatorNotStartedError,
     LocalContainerRunner,
+    LocalRunnerConfig,
     ReconcileWithoutDatabaseError,
     pod_name,
 )
@@ -35,6 +39,7 @@ from danube.runner.podman import (
     ExecInspect,
     ExecOutput,
     ExecSpec,
+    Mount,
     PodmanAPI,
     PodmanError,
     PodmanVersion,
@@ -414,6 +419,94 @@ async def test_exec_step_propagates_nonzero_exit_code() -> None:
 
     assert_eq(result.exit_code, 2)
     assert_eq(result.stderr, "boom")
+
+
+@test(mark="fast")
+async def test_start_and_wait_for_coordinator_execs_entrypoint() -> None:
+    podman = FakePodman()
+    podman.exec_output = ExecOutput(stdout="coordinator log\n", stderr="")
+    podman.exec_result = ExecInspect(exit_code=0, running=False)
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()))
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+
+    await runner.start_coordinator(
+        handle, {"DANUBE_JOB_ID": "j1", "DANUBE_RPC_TOKEN": "tok"}
+    )
+    exit_info = await runner.wait_for_coordinator(handle)
+
+    assert_eq(exit_info.exit_code, 0)
+    assert_eq(exit_info.stdout, "coordinator log\n")
+    # The entrypoint is exec'd in the Coordinator container, not the Worker.
+    exec_create = _by_method(podman.calls, "exec_create")
+    assert_eq(exec_create.payload["container"], f"{pod_name('j1')}-coordinator")
+    spec = exec_create.payload["spec"]
+    assert isinstance(spec, ExecSpec)
+    assert_eq(tuple(spec.command), ("python", "-m", "danube.coordinator"))
+    assert_eq(spec.work_dir, "/workspace")
+    assert_eq(spec.env["DANUBE_RPC_TOKEN"], "tok")
+    assert_eq(podman.methods, ["exec_create", "exec_start", "exec_inspect"])
+
+
+@test(mark="fast")
+async def test_wait_for_coordinator_propagates_nonzero_exit() -> None:
+    podman = FakePodman()
+    podman.exec_result = ExecInspect(exit_code=1, running=False)
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()))
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+
+    await runner.start_coordinator(handle, {})
+    exit_info = await runner.wait_for_coordinator(handle)
+
+    assert_eq(exit_info.exit_code, 1)
+
+
+@test(mark="fast")
+async def test_wait_for_coordinator_without_start_raises() -> None:
+    runner = LocalContainerRunner(FakePodman(), load_fixture(data_dir()))
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+
+    with assert_raises(CoordinatorNotStartedError):
+        _ = await runner.wait_for_coordinator(handle)
+
+
+@test(mark="fast")
+async def test_coordinator_env_merges_config_defaults() -> None:
+    podman = FakePodman()
+    config = LocalRunnerConfig(coordinator_env={"PYTHONPATH": "/opt/danube"})
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()), config=config)
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+
+    # The connection env overrides config defaults on key collisions.
+    await runner.start_coordinator(handle, {"DANUBE_JOB_ID": "j1"})
+
+    spec = _by_method(podman.calls, "exec_create").payload["spec"]
+    assert isinstance(spec, ExecSpec)
+    assert_eq(spec.env["PYTHONPATH"], "/opt/danube")
+    assert_eq(spec.env["DANUBE_JOB_ID"], "j1")
+
+
+@test(mark="fast")
+async def test_coordinator_mounts_apply_only_to_coordinator() -> None:
+    podman = FakePodman()
+    package_mount = Mount(
+        source="/src/danube", destination="/opt/danube", read_only=True
+    )
+    config = LocalRunnerConfig(coordinator_mounts=(package_mount,))
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()), config=config)
+
+    _ = await runner.start_job(START)
+
+    by_resource = {
+        _spec(c).labels[LABEL_RESOURCE]: _spec(c)
+        for c in podman.calls
+        if c.method == "create_container"
+    }
+    worker_destinations = {m.destination for m in by_resource[RESOURCE_WORKER].mounts}
+    coordinator_destinations = {
+        m.destination for m in by_resource[RESOURCE_COORDINATOR].mounts
+    }
+    assert "/opt/danube" not in worker_destinations
+    assert "/opt/danube" in coordinator_destinations
 
 
 @test(mark="fast")

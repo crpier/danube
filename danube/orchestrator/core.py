@@ -1,68 +1,58 @@
 """Master Core: drive a job through its lifecycle against a `Runner` and the DB.
 
-`JobOrchestrator` ties a `Runner` and a snekql `Database` together. It persists a
-job, asks the runner to create its environment, runs the job's steps, streams
-their output through a `LogWriter`, and records per-step results — advancing the
-job through the lifecycle in `danube.domain.lifecycle` so illegal transitions are
-impossible.
+`JobOrchestrator` ties a `Runner`, a `ControlPlane`, and a snekql `Database`
+together. It persists a job, asks the runner to create its environment, opens a
+control-plane session, starts the Coordinator, and waits for it to drive the
+pipeline to completion — advancing the job through the lifecycle in
+`danube.domain.lifecycle` so illegal transitions are impossible.
 
-Scope: no HTTP API, no Coordinator RPC, no scheduler. The steps to run are passed
-directly to `run_job`; in production they would arrive over the Coordinator RPC
-path, which lives outside this component.
+The orchestrator does not run steps itself. The Coordinator drives each
+`step.run()` over the RPC control plane (`docs/architecture/execution-model.md`,
+Execution Flow); the `ControlPlane` execs the command in the Worker, scrubs and
+logs the output, and records the step. The orchestrator owns only the
+environment/coordinator lifecycle around that loop.
 
 Failure handling follows `docs/architecture/execution-model.md`:
 
 - the runner failing to create the environment ends the job in `failure` before
   it ever reaches `running`;
-- a step exiting non-zero aborts the remaining steps (unless `check=False`),
-  ending the job in `failure`;
-- a runner exception while running ends the job in `failure`;
+- the Coordinator reporting `success`/`failure` over `/rpc/report-status` is the
+  authoritative outcome; the orchestrator does not overwrite a terminal state;
+- a Coordinator that exits non-zero without reporting (a crash) ends the job in
+  `failure`;
 - exceeding the pipeline's `max_duration_seconds` stops the job and ends it in
-  `timeout`.
+  `timeout`;
+- a runner error while starting/awaiting the Coordinator ends the job in
+  `failure`.
 
-`runner.cleanup_job` is always called once the environment exists, including on
-every failure path.
+The control-plane session is closed and `runner.cleanup_job` is called once the
+environment exists, on every path.
 """
+
+from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import anyio
 from snekql.sqlite import Database, Fetched, insert, select, update
 
-from danube.db.models import Job, Pipeline, Step
-from danube.domain.enums import JobStatus, StepStatus, TriggerType
-from danube.domain.lifecycle import transition
-from danube.domain.runner_types import (
-    ExecResult,
-    ExecStepRequest,
-    JobHandle,
-    StartJobRequest,
-)
-from danube.orchestrator.log_writer import LogWriter
+from danube.db.models import Job, Pipeline
+from danube.domain.enums import JobStatus, TriggerType
+from danube.domain.lifecycle import TERMINAL_STATES, transition
+from danube.domain.runner_types import CoordinatorExit, JobHandle, StartJobRequest
 from danube.runner.base import Runner
+from danube.sdk.client import ENV_JOB_ID, ENV_RPC_ADDRESS, ENV_RPC_TOKEN
+
+if TYPE_CHECKING:
+    # Imported for typing only: at runtime `danube.rpc.control_plane` imports
+    # `danube.orchestrator.log_writer`, so a runtime import here would be circular.
+    from danube.rpc.control_plane import ControlPlane
 
 logger = logging.getLogger("danube.orchestrator")
-
-
-@dataclass(frozen=True, slots=True)
-class StepSpec:
-    """One step the orchestrator should run, in pipeline order.
-
-    `check=True` (the default) aborts the pipeline if the command exits non-zero;
-    `check=False` mirrors `step.run(..., check=False)` and lets the pipeline
-    continue regardless of exit code.
-    """
-
-    name: str
-    command: str
-    check: bool = True
-    env: dict[str, str] = field(default_factory=dict[str, str])
-    timeout_seconds: int | None = None
 
 
 def _now() -> datetime:
@@ -70,12 +60,22 @@ def _now() -> datetime:
 
 
 class JobOrchestrator:
-    """Persist and run jobs against a `Runner` and a snekql `Database`."""
+    """Persist and run jobs against a `Runner`, a `ControlPlane`, and a database."""
 
-    def __init__(self, runner: Runner, db: Database, data_dir: Path | str) -> None:
+    def __init__(
+        self,
+        runner: Runner,
+        db: Database,
+        data_dir: Path | str,
+        control_plane: ControlPlane,
+        *,
+        rpc_address: str,
+    ) -> None:
         self._runner = runner
         self._db = db
         self._data_dir = Path(data_dir)
+        self._control_plane = control_plane
+        self._rpc_address = rpc_address
 
     async def create_job(
         self,
@@ -99,12 +99,16 @@ class JobOrchestrator:
             )
             return await tx.fetch_one(select(Job).where(Job.id.eq(job_id)))
 
-    async def run_job(self, job_id: str, steps: Sequence[StepSpec]) -> Job[Fetched]:
-        """Run ``job_id``'s steps, advancing it to a terminal state.
+    async def run_job(self, job_id: str) -> Job[Fetched]:
+        """Run ``job_id`` to a terminal state via its Coordinator.
 
-        Returns the final job row. The job moves
-        ``pending -> scheduling -> running -> {success | failure | timeout}``;
-        `runner.cleanup_job` runs once the environment exists, on every path.
+        The job moves
+        ``pending -> scheduling -> running -> {success | failure | timeout}``.
+        The Coordinator drives steps over the RPC control plane; the orchestrator
+        starts it, waits for it under the pipeline timeout, and finalizes the job
+        unless the Coordinator already reported a terminal status. The session is
+        closed and `runner.cleanup_job` runs once the environment exists, on every
+        path.
         """
         job = await self._fetch_job(job_id)
         pipeline = await self._fetch_pipeline(job.pipeline_id)
@@ -131,38 +135,24 @@ class JobOrchestrator:
             return await self._finalize(job_id, JobStatus.FAILURE, reason)
 
         log_path = self._log_path(job_id)
+        session = await self._control_plane.open_session(
+            job_id=job_id, pipeline_id=job.pipeline_id, handle=handle
+        )
         await self._record_scheduled(job_id, handle, log_path)
         await self._advance(job_id, JobStatus.RUNNING)
 
+        coordinator_env = {
+            ENV_RPC_ADDRESS: self._rpc_address,
+            ENV_JOB_ID: job_id,
+            ENV_RPC_TOKEN: session.token,
+        }
         final = JobStatus.SUCCESS
         reason: str | None = None
-        in_flight: str | None = None
         try:
-            async with LogWriter(log_path) as log:
-                with anyio.fail_after(pipeline.max_duration_seconds):
-                    for sequence, spec in enumerate(steps, start=1):
-                        step_id = str(uuid.uuid4())
-                        in_flight = step_id
-                        await self._begin_step(step_id, job_id, sequence, spec)
-                        result = await self._runner.exec_step(
-                            handle,
-                            ExecStepRequest(
-                                command=spec.command,
-                                env=spec.env,
-                                timeout_seconds=spec.timeout_seconds,
-                            ),
-                        )
-                        start, end = await log.write(result.stdout + result.stderr)
-                        await self._finish_step(step_id, result, start, end)
-                        in_flight = None
-                        if result.exit_code != 0 and spec.check:
-                            final = JobStatus.FAILURE
-                            reason = (
-                                f"step {spec.name!r} failed with exit code "
-                                f"{result.exit_code}"
-                            )
-                            logger.warning("job %s: %s; aborting", job_id, reason)
-                            break
+            with anyio.fail_after(pipeline.max_duration_seconds):
+                await self._runner.start_coordinator(handle, coordinator_env)
+                exit_info = await self._runner.wait_for_coordinator(handle)
+            final, reason = self._outcome(exit_info)
         except TimeoutError:
             final = JobStatus.TIMEOUT
             reason = (
@@ -170,16 +160,29 @@ class JobOrchestrator:
             )
             logger.warning("job %s timed out: %s", job_id, reason)
             await self._runner.stop_job(handle, reason="timeout")
-            await self._fail_in_flight(in_flight)
-        except Exception as e:  # runner failure: abort the job, still clean up.
+        except Exception as e:  # runner failure starting/awaiting the Coordinator
             final = JobStatus.FAILURE
             reason = f"runner failure: {e}"
             logger.warning("job %s failed: %s", job_id, reason)
-            await self._fail_in_flight(in_flight)
         finally:
+            await self._control_plane.close_session(job_id)
             await self._runner.cleanup_job(handle)
 
-        return await self._finalize(job_id, final, reason)
+        return await self._finalize_unless_terminal(job_id, final, reason)
+
+    def _outcome(self, exit_info: CoordinatorExit) -> tuple[JobStatus, str | None]:
+        """Map a Coordinator exit to a job outcome.
+
+        A clean exit is `success`; a non-zero exit is a crash and ends the job in
+        `failure`. When the Coordinator already reported a terminal status over
+        RPC, `_finalize_unless_terminal` keeps that instead of this outcome.
+        """
+        if exit_info.exit_code == 0:
+            return JobStatus.SUCCESS, None
+        return (
+            JobStatus.FAILURE,
+            f"coordinator exited with code {exit_info.exit_code}",
+        )
 
     async def _fetch_job(self, job_id: str) -> Job[Fetched]:
         async with self._db.transaction() as tx:
@@ -222,55 +225,19 @@ class JobOrchestrator:
                 .where(Job.id.eq(job_id))
             )
 
-    async def _begin_step(
-        self, step_id: str, job_id: str, sequence: int, spec: StepSpec
-    ) -> None:
-        async with self._db.transaction() as tx:
-            await tx.execute(
-                insert(
-                    Step(
-                        id=step_id,
-                        job_id=job_id,
-                        name=spec.name,
-                        sequence=sequence,
-                        command=spec.command,
-                        status=StepStatus.RUNNING,
-                        started_at=_now(),
-                    )
-                )
-            )
+    async def _finalize_unless_terminal(
+        self, job_id: str, target: JobStatus, reason: str | None
+    ) -> Job[Fetched]:
+        """Finalize the job, unless the Coordinator already drove it terminal.
 
-    async def _finish_step(
-        self, step_id: str, result: ExecResult, start: int, end: int
-    ) -> None:
-        failed = result.exit_code != 0
-        status = StepStatus.FAILURE if failed else StepStatus.SUCCESS
-        async with self._db.transaction() as tx:
-            _ = await tx.execute(
-                update(Step)
-                .set(
-                    Step.status.to(status),
-                    Step.exit_code.to(result.exit_code),
-                    Step.finished_at.to(_now()),
-                    Step.log_offset_start.to(start),
-                    Step.log_offset_end.to(end),
-                )
-                .where(Step.id.eq(step_id))
-            )
-
-    async def _fail_in_flight(self, step_id: str | None) -> None:
-        """Mark a step that was still running when the job aborted as failed."""
-        if step_id is None:
-            return
-        async with self._db.transaction() as tx:
-            _ = await tx.execute(
-                update(Step)
-                .set(
-                    Step.status.to(StepStatus.FAILURE),
-                    Step.finished_at.to(_now()),
-                )
-                .where(Step.id.eq(step_id))
-            )
+        The Coordinator's `/rpc/report-status` is authoritative: if it already
+        moved the job to a terminal state, that result stands and this is a no-op
+        read-back (avoiding an illegal terminal->terminal transition).
+        """
+        job = await self._fetch_job(job_id)
+        if JobStatus(job.status) in TERMINAL_STATES:
+            return job
+        return await self._finalize(job_id, target, reason)
 
     async def _finalize(
         self, job_id: str, target: JobStatus, reason: str | None

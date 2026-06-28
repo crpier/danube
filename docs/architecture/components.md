@@ -86,7 +86,7 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 
 - Create job records
 - Ask runner to create job containers and workspace
-- Wait for Coordinator readiness
+- Start the Coordinator and await its exit under the job timeout (the Coordinator drives the pipeline over RPC; the Master does not run steps itself)
 - Validate Coordinator RPC requests
 - Execute Worker commands through the runner
 - Stream logs to disk and clients
@@ -108,6 +108,7 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 - Pull or validate required images
 - Create one Podman pod per job
 - Start Coordinator and Worker containers inside that pod
+- Await the Coordinator's exit and report its exit code to the Master
 - Exec commands in Worker
 - Stream stdout/stderr
 - Stop containers

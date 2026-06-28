@@ -86,6 +86,20 @@ Worker container
   └─ denied: direct internet
 ```
 
+### Control path vs. egress denial
+
+The Coordinator reaching the Master RPC and the Worker being denied direct internet
+are two requirements on the **same** pod network namespace (both containers share
+it). The current `LocalContainerRunner` default attaches the pod to a single
+`internal` Podman network, which denies the internet but also blocks the host RPC,
+so a real Coordinator cannot call back over it.
+
+Until the egress proxy is productized, the end-to-end path uses a deliberate
+carve-out: a non-`internal` control network the pod can use to reach the Master at
+`host.containers.internal:<rpc_port>`. Splitting these cleanly — a reachable control
+path while the Worker's general egress stays denied — is the job of the egress-proxy
+work and is out of scope here.
+
 ## Egress Control
 
 Danube supports controlled egress for builds that need package registries, Git forges, or deployment targets.

@@ -4,6 +4,7 @@ from pydantic import BaseModel, ValidationError
 from snektest import Param, assert_eq, assert_raises, test
 
 from danube.domain.runner_types import (
+    CoordinatorExit,
     ExecResult,
     ExecStepRequest,
     JobHandle,
@@ -17,6 +18,7 @@ ALL_MODELS = [
     JobHandle,
     ExecStepRequest,
     ExecResult,
+    CoordinatorExit,
     ReconcileReport,
     RunnerHealth,
 ]
@@ -31,6 +33,7 @@ VALID_KWARGS: dict[type[BaseModel], dict[str, object]] = {
     JobHandle: {"job_id": "j1", "pod_id": "pod-1", "workspace_path": "/ws/j1"},
     ExecStepRequest: {"command": "echo hi"},
     ExecResult: {"exit_code": 0, "stdout": "", "stderr": ""},
+    CoordinatorExit: {"exit_code": 0},
     ReconcileReport: {},
     RunnerHealth: {"healthy": True, "runtime": "podman"},
 }
@@ -74,6 +77,13 @@ def test_exec_result_valid() -> None:
     result = ExecResult(exit_code=1, stdout="out", stderr="err")
     assert_eq(result.exit_code, 1)
     assert_eq(result.stderr, "err")
+
+
+@test(mark="fast")
+def test_coordinator_exit_defaults_empty_output() -> None:
+    exit_info = CoordinatorExit(exit_code=0)
+    assert_eq(exit_info.stdout, "")
+    assert_eq(exit_info.stderr, "")
 
 
 @test(mark="fast")

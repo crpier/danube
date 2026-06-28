@@ -6,9 +6,11 @@ inheriting from a shared base. Every method speaks Danube DTOs from
 `danube.domain.runner_types`; none leak runtime concepts such as Podman.
 """
 
+from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from danube.domain.runner_types import (
+    CoordinatorExit,
     ExecResult,
     ExecStepRequest,
     JobHandle,
@@ -29,6 +31,18 @@ class Runner(Protocol):
 
     async def exec_step(self, job: JobHandle, request: ExecStepRequest) -> ExecResult:
         """Run a single command in the job's Worker and return its outcome."""
+        ...
+
+    async def start_coordinator(self, job: JobHandle, env: Mapping[str, str]) -> None:
+        """Launch the Coordinator process that drives the pipeline.
+
+        `env` carries the SDK's connection variables (`DANUBE_RPC_ADDRESS`,
+        `DANUBE_JOB_ID`, `DANUBE_RPC_TOKEN`). Returns once the Coordinator has
+        been started; use `wait_for_coordinator` to await its exit."""
+        ...
+
+    async def wait_for_coordinator(self, job: JobHandle) -> CoordinatorExit:
+        """Block until the Coordinator process exits and report its outcome."""
         ...
 
     async def stop_job(self, job: JobHandle, reason: str) -> None:
