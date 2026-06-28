@@ -14,22 +14,21 @@ are scrubbed from the captured output before it is written to the job log
 it already holds the value it asked for.
 
 Real Worker exec is provided by the injected `Runner` (the `FakeRunner` in tests,
-a Podman-backed runner in production); secret decryption is a pluggable hook that
-defaults to a UTF-8 decode of the stored ciphertext.
+a Podman-backed runner in production); secret loading, AES-256-GCM decryption, and
+per-job caching are owned by the injected `SecretService`.
 """
 
 import hmac
 import logging
 import secrets as secrets_module
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from snekql.sqlite import Database, insert, select, update
 
-from danube.db.models import Artifact, Job, Secret, Step
+from danube.db.models import Artifact, Job, Step
 from danube.domain.enums import JobStatus, StepStatus
 from danube.domain.lifecycle import transition
 from danube.domain.runner_types import ExecStepRequest, JobHandle
@@ -41,22 +40,12 @@ from danube.rpc.schemas import (
     UploadArtifactResponse,
 )
 from danube.runner.base import Runner
+from danube.security import SecretService
 
 logger = logging.getLogger("danube.rpc")
 
-SecretDecryptor = Callable[[bytes], str]
-
 ARTIFACT_ROOT = Path("/var/lib/danube/artifacts")
 _SECRET_MASK = "***"  # noqa: S105 - log redaction mask, not a credential
-
-
-def _default_decrypt(ciphertext: bytes) -> str:
-    """Minimal stand-in for real AES-256-GCM decryption (not yet wired up).
-
-    Treats the stored ciphertext as UTF-8 plaintext so the control plane has a
-    working secret path without pulling in the encryption key machinery yet.
-    """
-    return ciphertext.decode("utf-8")
 
 
 def scrub_secrets(text: str, values: list[str]) -> str:
@@ -107,8 +96,6 @@ class JobSession:
     token: str
     handle: JobHandle
     log: LogWriter
-    # Authorized plaintext secrets, by key, loaded once when the session opens.
-    secret_values: dict[str, str]
     _sequence: int = field(default=0, init=False)
 
     def next_sequence(self) -> int:
@@ -129,12 +116,12 @@ class ControlPlane:
         db: Database,
         data_dir: Path | str,
         *,
-        decrypt: SecretDecryptor = _default_decrypt,
+        secret_service: SecretService | None = None,
     ) -> None:
         self._runner = runner
         self._db = db
         self._data_dir = Path(data_dir)
-        self._decrypt = decrypt
+        self._secrets = secret_service or SecretService(db)
         self._sessions: dict[str, JobSession] = {}
 
     async def open_session(
@@ -151,7 +138,7 @@ class ControlPlane:
         mints a job-scoped token if one is not supplied, and returns the session.
         """
         resolved_token = token or secrets_module.token_urlsafe(32)
-        secret_values = await self._fetch_secrets(pipeline_id)
+        await self._secrets.load_for_job(job_id, pipeline_id)
         log = LogWriter(self._log_path(job_id))
         _ = await log.__aenter__()
         session = JobSession(
@@ -160,13 +147,16 @@ class ControlPlane:
             token=resolved_token,
             handle=handle,
             log=log,
-            secret_values=secret_values,
         )
         self._sessions[job_id] = session
         return session
 
     async def close_session(self, job_id: str) -> None:
-        """Drop a job's session and close its log. Idempotent."""
+        """Drop a job's session, clear its cached secrets, and close its log.
+
+        Idempotent.
+        """
+        self._secrets.clear_job(job_id)
         session = self._sessions.pop(job_id, None)
         if session is not None:
             await session.log.__aexit__(None, None, None)
@@ -176,7 +166,7 @@ class ControlPlane:
     ) -> RunStepResponse:
         """Exec one command in the job's Worker, log scrubbed output, return code."""
         session = await self._authorize(job_id, token)
-        secret_values = list(session.secret_values.values())
+        secret_values = self._secrets.active_values(session.job_id)
         sequence = session.next_sequence()
         step_id = str(uuid.uuid4())
         name = request.name or f"step-{sequence}"
@@ -202,8 +192,8 @@ class ControlPlane:
 
     async def get_secret(self, job_id: str, token: str, key: str) -> str:
         """Return an authorized secret value, or raise `SecretNotAuthorizedError`."""
-        session = await self._authorize(job_id, token)
-        value = session.secret_values.get(key)
+        _ = await self._authorize(job_id, token)
+        value = self._secrets.get(job_id, key)
         if value is None:
             # Do not reveal whether the key exists for another pipeline.
             raise SecretNotAuthorizedError(key)
@@ -274,16 +264,6 @@ class ControlPlane:
         if JobStatus(job.status) in _TERMINAL_STATES:
             raise SessionNotActiveError(job_id)
         return session
-
-    async def _fetch_secrets(self, pipeline_id: str) -> dict[str, str]:
-        """Load the pipeline's secrets plus global (pipeline-less) secrets."""
-        async with self._db.transaction() as tx:
-            rows = await tx.fetch_all(
-                select(Secret).where(
-                    Secret.pipeline_id.eq(pipeline_id) | Secret.pipeline_id.is_null()
-                )
-            )
-        return {row.key: self._decrypt(row.value_encrypted) for row in rows}
 
     def _log_path(self, job_id: str) -> Path:
         return self._data_dir / "logs" / f"{job_id}.log"
