@@ -32,6 +32,7 @@ from danube.rpc import ControlPlane
 from danube.runner import FakeRunner
 from danube.sdk import DanubeClient
 from danube.sdk.client import ENV_JOB_ID, ENV_RPC_TOKEN
+from danube.security import SecretCipher, SecretService, generate_key
 
 RPC_ADDRESS = "http://master.test:9000"
 
@@ -99,7 +100,12 @@ async def _make_harness(
 
     runner = FakeRunner(coordinator=program)
     harness.runner = runner
-    control_plane = ControlPlane(runner, db, data_dir)
+    control_plane = ControlPlane(
+        runner,
+        db,
+        data_dir,
+        secret_service=SecretService(db, SecretCipher(generate_key())),
+    )
     orchestrator = JobOrchestrator(
         runner, db, data_dir, control_plane, rpc_address=RPC_ADDRESS
     )

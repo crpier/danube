@@ -16,7 +16,6 @@ upserts it into the ``secrets`` table.
 """
 
 import uuid
-from collections.abc import Callable
 from pathlib import Path
 from typing import Self
 
@@ -25,39 +24,20 @@ from snekql.sqlite import Database, insert, select, update
 from danube.db.models import Secret
 from danube.security.crypto import SecretCipher, load_key
 
-SecretDecryptor = Callable[[bytes], str]
-
-
-def _plaintext_decrypt(blob: bytes) -> str:
-    """Stand-in decryptor that treats the stored blob as UTF-8 plaintext.
-
-    Used only when no encryption key is configured (e.g. in tests that seed
-    plaintext bytes). Production callers build the service with a `SecretCipher`
-    via `SecretService.from_key_file` so real AES-256-GCM decryption is used.
-    """
-    return blob.decode("utf-8")
-
 
 class SecretService:
     """Loads, caches, and serves a job's authorized decrypted secrets."""
 
-    def __init__(
-        self, db: Database, *, decrypt: SecretDecryptor = _plaintext_decrypt
-    ) -> None:
-        self._db = db
-        self._decrypt = decrypt
+    def __init__(self, database: Database, cipher: SecretCipher) -> None:
+        self._database = database
+        self._cipher = cipher
         # Plaintext secrets keyed by (job_id, secret_key); cleared per job on end.
         self._cache: dict[tuple[str, str], str] = {}
 
     @classmethod
-    def with_cipher(cls, db: Database, cipher: SecretCipher) -> Self:
-        """Build a service that decrypts with the given AES-256-GCM cipher."""
-        return cls(db, decrypt=cipher.decrypt)
-
-    @classmethod
-    def from_key_file(cls, db: Database, key_path: Path | str) -> Self:
+    def from_key_file(cls, database: Database, key_path: Path | str) -> Self:
         """Build a service whose cipher key is read from ``key_path``."""
-        return cls.with_cipher(db, SecretCipher(load_key(key_path)))
+        return cls(database, SecretCipher(load_key(key_path)))
 
     async def load_for_job(self, job_id: str, pipeline_id: str) -> None:
         """Decrypt and cache every secret the pipeline is authorized for.
@@ -65,14 +45,14 @@ class SecretService:
         Loads pipeline-scoped secrets plus global (pipeline-less) secrets, so the
         cached key set is exactly what this job may read.
         """
-        async with self._db.transaction() as tx:
+        async with self._database.transaction() as tx:
             rows = await tx.fetch_all(
                 select(Secret).where(
                     Secret.pipeline_id.eq(pipeline_id) | Secret.pipeline_id.is_null()
                 )
             )
         for row in rows:
-            self._cache[(job_id, row.key)] = self._decrypt(row.value_encrypted)
+            self._cache[(job_id, row.key)] = self._cipher.decrypt(row.value_encrypted)
 
     def get(self, job_id: str, key: str) -> str | None:
         """Return the cached secret value, or ``None`` if not authorized/loaded."""
@@ -93,7 +73,7 @@ class SecretService:
 
 
 async def store_secret(
-    db: Database,
+    database: Database,
     cipher: SecretCipher,
     *,
     key: str,
@@ -106,7 +86,7 @@ async def store_secret(
     new row is inserted with a fresh UUID.
     """
     blob = cipher.encrypt(value)
-    async with db.transaction() as tx:
+    async with database.transaction() as tx:
         predicate = Secret.key.eq(key)
         predicate = (
             predicate & Secret.pipeline_id.is_null()

@@ -116,12 +116,15 @@ class ControlPlane:
         db: Database,
         data_dir: Path | str,
         *,
-        secret_service: SecretService | None = None,
+        secret_service: SecretService,
     ) -> None:
         self._runner = runner
         self._db = db
         self._data_dir = Path(data_dir)
-        self._secrets = secret_service or SecretService(db)
+        # An explicit cipher-backed service is required: there is no plaintext
+        # fallback, so a misconfigured key fails closed rather than serving
+        # ciphertext as if it were the secret value.
+        self._secrets = secret_service
         self._sessions: dict[str, JobSession] = {}
 
     async def open_session(

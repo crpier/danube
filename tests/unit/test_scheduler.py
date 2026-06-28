@@ -26,6 +26,7 @@ from danube.domain.lifecycle import TERMINAL_STATES
 from danube.orchestrator import JobOrchestrator, PipelineNotFoundError, Scheduler
 from danube.rpc import ControlPlane
 from danube.runner import FakeRunner
+from danube.security import SecretCipher, SecretService, generate_key
 
 RPC_ADDRESS = "http://master.test:9000"
 T0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
@@ -73,7 +74,12 @@ async def _make_env(
     try:
         async with db.transaction() as tx:
             await tx.execute(insert(Team(id="t1", name="team", global_admin=False)))
-        control_plane = ControlPlane(runner, db, data_dir)
+        control_plane = ControlPlane(
+            runner,
+            db,
+            data_dir,
+            secret_service=SecretService(db, SecretCipher(generate_key())),
+        )
         orchestrator = JobOrchestrator(
             runner, db, data_dir, control_plane, rpc_address=RPC_ADDRESS
         )

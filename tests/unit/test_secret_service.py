@@ -33,15 +33,15 @@ KEY = b"0123456789abcdef0123456789abcdef"  # 32 bytes
 async def _seed_pipelines(db: Database) -> None:
     async with db.transaction() as tx:
         await tx.execute(insert(Team(id="t1", name="team", global_admin=False)))
-        for pid in ("p1", "p2"):
+        for pipeline_id in ("p1", "p2"):
             await tx.execute(
                 insert(
                     Pipeline(
-                        id=pid,
-                        name=pid,
+                        id=pipeline_id,
+                        name=pipeline_id,
                         team_id="t1",
-                        repo_url=f"https://example.test/{pid}.git",
-                        worker_image=f"img:{pid}",
+                        repo_url=f"https://example.test/{pipeline_id}.git",
+                        worker_image=f"img:{pipeline_id}",
                     )
                 )
             )
@@ -115,20 +115,26 @@ def test_generate_key_returns_aes256_key() -> None:
 
 
 @test(mark="fast")
-def test_load_key_validates_length() -> None:
+def test_load_key_reads_a_valid_key() -> None:
     with tempfile.TemporaryDirectory() as raw_dir:
-        directory = Path(raw_dir)
-        good = directory / "good.key"
+        good = Path(raw_dir) / "good.key"
         good.write_bytes(KEY)
         assert_eq(load_key(good), KEY)
 
-        bad = directory / "bad.key"
+
+@test(mark="fast")
+def test_load_key_rejects_wrong_length() -> None:
+    with tempfile.TemporaryDirectory() as raw_dir:
+        bad = Path(raw_dir) / "bad.key"
         bad.write_bytes(b"short")
         with assert_raises(InvalidKeyError):
             _ = load_key(bad)
 
-        with assert_raises(InvalidKeyError):
-            _ = load_key(directory / "missing.key")
+
+@test(mark="fast")
+def test_load_key_rejects_missing_file() -> None:
+    with tempfile.TemporaryDirectory() as raw_dir, assert_raises(InvalidKeyError):
+        _ = load_key(Path(raw_dir) / "missing.key")
 
 
 # --- store + service --------------------------------------------------------
@@ -147,7 +153,7 @@ async def test_store_then_load_round_trips_through_db() -> None:
         row = await tx.fetch_one(select(Secret).where(Secret.key.eq("DEPLOY_TOKEN")))
     assert row.value_encrypted != b"tok-123"
 
-    service = SecretService.with_cipher(database, cipher)
+    service = SecretService(database, cipher)
     await service.load_for_job("j1", "p1")
     assert_eq(service.get("j1", "DEPLOY_TOKEN"), "tok-123")
 
@@ -164,7 +170,7 @@ async def test_store_secret_upserts_existing_key() -> None:
     )
     assert_eq(first, second)  # same row, updated in place
 
-    service = SecretService.with_cipher(database, cipher)
+    service = SecretService(database, cipher)
     await service.load_for_job("j1", "p1")
     assert_eq(service.get("j1", "API_KEY"), "v2")
 
@@ -177,7 +183,7 @@ async def test_global_secret_is_authorized_for_every_pipeline() -> None:
         database, cipher, key="GLOBAL", value="glob", pipeline_id=None
     )
 
-    service = SecretService.with_cipher(database, cipher)
+    service = SecretService(database, cipher)
     await service.load_for_job("j1", "p1")
     assert_eq(service.get("j1", "GLOBAL"), "glob")
 
@@ -190,7 +196,7 @@ async def test_unauthorized_pipeline_secret_is_not_loaded() -> None:
         database, cipher, key="OTHER", value="nope", pipeline_id="p2"
     )
 
-    service = SecretService.with_cipher(database, cipher)
+    service = SecretService(database, cipher)
     await service.load_for_job("j1", "p1")
     # p1 may not read a p2-scoped secret: it is absent from the cache.
     assert service.get("j1", "OTHER") is None
@@ -199,7 +205,7 @@ async def test_unauthorized_pipeline_secret_is_not_loaded() -> None:
 @test(mark="fast")
 async def test_unknown_key_returns_none() -> None:
     database = await load_fixture(db())
-    service = SecretService.with_cipher(database, SecretCipher(KEY))
+    service = SecretService(database, SecretCipher(KEY))
     await service.load_for_job("j1", "p1")
     assert service.get("j1", "NOPE") is None
 
@@ -212,7 +218,7 @@ async def test_cache_is_per_job_and_cleared_on_job_end() -> None:
         database, cipher, key="DEPLOY_TOKEN", value="tok-123", pipeline_id="p1"
     )
 
-    service = SecretService.with_cipher(database, cipher)
+    service = SecretService(database, cipher)
     await service.load_for_job("j1", "p1")
     await service.load_for_job("j2", "p1")
 
@@ -234,7 +240,7 @@ async def test_active_values_lists_only_the_job_secrets() -> None:
     _ = await store_secret(database, cipher, key="A", value="aaa", pipeline_id="p1")
     _ = await store_secret(database, cipher, key="B", value="bbb", pipeline_id="p2")
 
-    service = SecretService.with_cipher(database, cipher)
+    service = SecretService(database, cipher)
     await service.load_for_job("j1", "p1")
     await service.load_for_job("j2", "p2")
 
