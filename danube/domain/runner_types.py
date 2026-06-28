@@ -52,6 +52,20 @@ class ExecResult(_Frozen):
     stderr: str
 
 
+class CoordinatorExit(_Frozen):
+    """Outcome of the Coordinator process that drove a job's pipeline.
+
+    Returned by `wait_for_coordinator` once the Coordinator exits. `exit_code` is
+    the authoritative crash signal: a non-zero code with no terminal
+    `report-status` means the pipeline crashed. `stdout`/`stderr` carry the
+    Coordinator's own diagnostic output (not step output, which the control plane
+    logs separately)."""
+
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+
+
 class ReconcileReport(_Frozen):
     """Discrepancies found between DB `runner_state` and live runtime resources,
     one list of affected job ids per category from `local-runner.md`."""

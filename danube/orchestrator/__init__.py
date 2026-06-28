@@ -1,16 +1,16 @@
 """Master Core orchestration: drive jobs through their lifecycle.
 
-`JobOrchestrator` persists jobs, runs their steps against a `Runner`, and streams
-per-step output to disk via `LogWriter`, reusing `danube.domain.lifecycle` for all
-state transitions.
+`JobOrchestrator` persists jobs, asks a `Runner` to create each job's environment,
+opens a control-plane session, and runs the Coordinator that drives the pipeline
+over RPC — reusing `danube.domain.lifecycle` for all state transitions. Step
+output is streamed to disk via `LogWriter` by the control plane.
 """
 
-from danube.orchestrator.core import JobOrchestrator, StepSpec
+from danube.orchestrator.core import JobOrchestrator
 from danube.orchestrator.log_writer import LogWriter, LogWriterError
 
 __all__ = [
     "JobOrchestrator",
     "LogWriter",
     "LogWriterError",
-    "StepSpec",
 ]

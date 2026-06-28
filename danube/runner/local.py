@@ -26,7 +26,7 @@ import logging
 import shutil
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
@@ -37,6 +37,7 @@ from danube.db.models import Job, RunnerState
 from danube.domain.enums import JobStatus
 from danube.domain.lifecycle import ACTIVE_STATES
 from danube.domain.runner_types import (
+    CoordinatorExit,
     ExecResult,
     ExecStepRequest,
     JobHandle,
@@ -91,10 +92,25 @@ DEFAULT_LIMITS = ResourceLimits(
 DEFAULT_EGRESS_NETWORK = "danube-egress"
 
 DEFAULT_COORDINATOR_IMAGE = "localhost/danube-coordinator:latest"
-# Keep-alive command so the containers stay up for exec; the Coordinator agent
-# and real Worker entrypoints replace this later. A portable `sh` loop avoids
-# relying on `sleep infinity`, which older BusyBox builds reject.
+# Keep-alive command so the containers stay up for exec; the real Worker
+# entrypoint replaces this later. A portable `sh` loop avoids relying on
+# `sleep infinity`, which older BusyBox builds reject. Both containers idle on
+# this; the Coordinator's pipeline is launched on demand via `start_coordinator`.
 KEEP_ALIVE_COMMAND = ("/bin/sh", "-c", "while :; do sleep 3600; done")
+
+# How the Coordinator container boots the SDK and runs the user pipeline
+# (`docs/architecture/execution-model.md`, step 5). The Danube-provided image
+# ships the `danube` distribution, so this module is importable; dev/test setups
+# bind-mount the package and set `PYTHONPATH` via `coordinator_env`.
+COORDINATOR_COMMAND = ("python", "-m", "danube.coordinator")
+
+
+class CoordinatorNotStartedError(Exception):
+    """`wait_for_coordinator` was called before `start_coordinator` for a job."""
+
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+        super().__init__(f"coordinator was not started for job {job_id!r}")
 
 
 class ReconcileWithoutDatabaseError(Exception):
@@ -125,6 +141,13 @@ class LocalRunnerConfig:
     coordinator_image: str = DEFAULT_COORDINATOR_IMAGE
     egress_network: str = DEFAULT_EGRESS_NETWORK
     limits: ResourceLimits = DEFAULT_LIMITS
+    # How to launch the Coordinator pipeline, plus extra env and read-only mounts
+    # the Coordinator container needs (e.g. the `danube` package and `PYTHONPATH`
+    # for a stock-Python image that does not bundle the SDK). The Worker never
+    # receives these.
+    coordinator_command: tuple[str, ...] = COORDINATOR_COMMAND
+    coordinator_env: Mapping[str, str] = field(default_factory=dict[str, str])
+    coordinator_mounts: tuple[Mount, ...] = ()
 
 
 _DEFAULT_CONFIG = LocalRunnerConfig()
@@ -147,6 +170,12 @@ class LocalContainerRunner:
         self._coordinator_image = config.coordinator_image
         self._egress_network = config.egress_network
         self._limits = config.limits
+        self._coordinator_command = config.coordinator_command
+        self._coordinator_env = dict(config.coordinator_env)
+        self._coordinator_mounts = tuple(config.coordinator_mounts)
+        # Active Coordinator exec sessions, by job id, set by `start_coordinator`
+        # and consumed by `wait_for_coordinator`.
+        self._coordinator_execs: dict[str, str] = {}
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -203,6 +232,47 @@ class LocalContainerRunner:
         output = await self._podman.exec_start(exec_id)
         inspect = await self._podman.exec_inspect(exec_id)
         return ExecResult(
+            exit_code=inspect.exit_code,
+            stdout=output.stdout,
+            stderr=output.stderr,
+        )
+
+    async def start_coordinator(self, job: JobHandle, env: Mapping[str, str]) -> None:
+        """Launch the Coordinator pipeline inside its container via Podman exec.
+
+        Creates (but does not yet run) the exec session for the entrypoint with
+        the SDK connection env merged over the configured Coordinator env. The
+        process runs when `wait_for_coordinator` starts the session. The Master's
+        RPC is already serving by this point, so the Coordinator can call back
+        immediately — no separate readiness handshake is needed.
+        """
+        coordinator = self._coordinator_name(job.job_id)
+        exec_id = await self._podman.exec_create(
+            coordinator,
+            ExecSpec(
+                command=self._coordinator_command,
+                env={**self._coordinator_env, **env},
+                work_dir=WORKSPACE_MOUNT,
+            ),
+        )
+        self._coordinator_execs[job.job_id] = exec_id
+
+    async def wait_for_coordinator(self, job: JobHandle) -> CoordinatorExit:
+        """Run the Coordinator exec to completion and report its exit and output.
+
+        Blocks while the entrypoint drives the pipeline (each `step.run()` reaches
+        the Worker over the Master RPC, not this exec), then inspects the session
+        for the exit code.
+        """
+        exec_id = self._coordinator_execs.get(job.job_id)
+        if exec_id is None:
+            raise CoordinatorNotStartedError(job.job_id)
+        try:
+            output = await self._podman.exec_start(exec_id)
+            inspect = await self._podman.exec_inspect(exec_id)
+        finally:
+            _ = self._coordinator_execs.pop(job.job_id, None)
+        return CoordinatorExit(
             exit_code=inspect.exit_code,
             stdout=output.stdout,
             stderr=output.stderr,
@@ -314,6 +384,12 @@ class LocalContainerRunner:
         self, request: StartJobRequest, resource: str, image: str
     ) -> ContainerSpec:
         workspace = self._workspace_path(request.job_id)
+        workspace_mount = Mount(
+            source=str(workspace), destination=WORKSPACE_MOUNT, read_only=False
+        )
+        # Only the Coordinator gets the extra read-only mounts (e.g. the SDK
+        # package); the Worker is restricted to the shared workspace.
+        extra = self._coordinator_mounts if resource == RESOURCE_COORDINATOR else ()
         return ContainerSpec(
             name=self._container_name(request.job_id, resource),
             image=image,
@@ -321,13 +397,7 @@ class LocalContainerRunner:
             labels=self._labels(request, resource),
             command=KEEP_ALIVE_COMMAND,
             env=request.env,
-            mounts=(
-                Mount(
-                    source=str(workspace),
-                    destination=WORKSPACE_MOUNT,
-                    read_only=False,
-                ),
-            ),
+            mounts=(workspace_mount, *extra),
             work_dir=WORKSPACE_MOUNT,
             privileged=False,
             read_only_rootfs=True,
@@ -341,6 +411,9 @@ class LocalContainerRunner:
 
     def _worker_name(self, job_id: str) -> str:
         return self._container_name(job_id, RESOURCE_WORKER)
+
+    def _coordinator_name(self, job_id: str) -> str:
+        return self._container_name(job_id, RESOURCE_COORDINATOR)
 
     async def _ensure_images(self, worker_image: str) -> None:
         for image in (worker_image, self._coordinator_image):

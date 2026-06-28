@@ -1,10 +1,12 @@
 """Tests for the in-memory `FakeRunner` and its conformance to `Runner`."""
 
+from collections.abc import Mapping
 from typing import assert_type
 
 from snektest import assert_eq, assert_raises, test
 
 from danube.domain.runner_types import (
+    CoordinatorExit,
     ExecResult,
     ExecStepRequest,
     JobHandle,
@@ -128,6 +130,77 @@ async def test_default_result_when_unscripted() -> None:
     handle = await runner.start_job(START)
     result = await runner.exec_step(handle, ExecStepRequest(command="anything"))
     assert_eq(result, ExecResult(exit_code=7, stdout="d", stderr=""))
+
+
+@test(mark="fast")
+async def test_wait_for_coordinator_default_exit_zero() -> None:
+    runner = FakeRunner()
+    handle = await runner.start_job(START)
+
+    await runner.start_coordinator(handle, {"DANUBE_JOB_ID": "j1"})
+    exit_info = await runner.wait_for_coordinator(handle)
+
+    assert_eq(exit_info, CoordinatorExit(exit_code=0))
+    assert_eq(
+        runner.method_names,
+        ["start_job", "start_coordinator", "wait_for_coordinator"],
+    )
+
+
+@test(mark="fast")
+async def test_coordinator_exit_code_is_configurable() -> None:
+    runner = FakeRunner(coordinator_exit_code=3)
+    handle = await runner.start_job(START)
+
+    await runner.start_coordinator(handle, {})
+    exit_info = await runner.wait_for_coordinator(handle)
+
+    assert_eq(exit_info.exit_code, 3)
+
+
+@test(mark="fast")
+async def test_injected_coordinator_program_runs_with_env() -> None:
+    seen: dict[str, str] = {}
+
+    async def program(env: Mapping[str, str]) -> int:
+        seen.update(env)
+        return 0
+
+    runner = FakeRunner(coordinator=program)
+    handle = await runner.start_job(START)
+
+    await runner.start_coordinator(handle, {"DANUBE_RPC_TOKEN": "tok"})
+    exit_info = await runner.wait_for_coordinator(handle)
+
+    assert_eq(exit_info.exit_code, 0)
+    assert_eq(seen, {"DANUBE_RPC_TOKEN": "tok"})
+
+
+@test(mark="fast")
+async def test_crashing_coordinator_program_reports_nonzero_exit() -> None:
+    async def program(_env: Mapping[str, str]) -> int:
+        msg = "pipeline blew up"
+        raise RuntimeError(msg)
+
+    runner = FakeRunner(coordinator=program)
+    handle = await runner.start_job(START)
+
+    await runner.start_coordinator(handle, {})
+    # A crashing Coordinator process exits non-zero; it is not a runner failure.
+    exit_info = await runner.wait_for_coordinator(handle)
+
+    assert exit_info.exit_code != 0
+    assert "pipeline blew up" in exit_info.stderr
+
+
+@test(mark="fast")
+async def test_start_coordinator_against_inactive_job_raises() -> None:
+    runner = FakeRunner()
+    handle = await runner.start_job(START)
+    await runner.cleanup_job(handle)
+
+    with assert_raises(JobNotActiveError):
+        await runner.start_coordinator(handle, {})
 
 
 @test(mark="fast")
