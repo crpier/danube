@@ -13,6 +13,8 @@ from typing import Annotated
 from fastapi import Depends, Query
 from snekql.sqlite import Database
 
+from danube.orchestrator import JobManager
+
 # Bound the page size so a client cannot ask for an unbounded result set.
 MAX_PAGE_LIMIT = 200
 DEFAULT_PAGE_LIMIT = 50
@@ -29,6 +31,20 @@ def get_db() -> Database:
 
 
 DbDep = Annotated[Database, Depends(get_db)]
+
+
+def get_job_manager() -> JobManager:
+    """Dependency key for the request-scoped job manager.
+
+    Always overridden via `app.dependency_overrides` in `create_app` when a job
+    manager is supplied; reaching this body means a control-plane route was
+    mounted without one.
+    """
+    msg = "job manager dependency is not configured; build the app with create_app"
+    raise RuntimeError(msg)
+
+
+JobManagerDep = Annotated[JobManager, Depends(get_job_manager)]
 
 
 @dataclass(frozen=True, slots=True)

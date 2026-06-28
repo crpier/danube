@@ -6,11 +6,21 @@ over RPC — reusing `danube.domain.lifecycle` for all state transitions. Step
 output is streamed to disk via `LogWriter` by the control plane.
 """
 
-from danube.orchestrator.core import JobOrchestrator
+from danube.orchestrator.core import (
+    CannotCancelError,
+    JobNotFoundError,
+    JobOrchestrator,
+    PipelineNotFoundError,
+)
 from danube.orchestrator.log_writer import LogWriter, LogWriterError
+from danube.orchestrator.manager import JobManager
 
 __all__ = [
+    "CannotCancelError",
+    "JobManager",
+    "JobNotFoundError",
     "JobOrchestrator",
     "LogWriter",
     "LogWriterError",
+    "PipelineNotFoundError",
 ]

@@ -50,6 +50,16 @@ class PipelineResponse(BaseModel):
     updated_at: datetime
 
 
+class RunPipelineRequest(BaseModel):
+    """Body for a manual pipeline trigger.
+
+    `ref` is the optional git ref (branch/tag/sha) to build; when omitted the
+    pipeline's default is used. The body itself is optional on the request.
+    """
+
+    ref: str | None = None
+
+
 class Page[T](BaseModel):
     """A paginated slice of a larger result set.
 

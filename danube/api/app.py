@@ -16,8 +16,9 @@ from fastapi import FastAPI
 from snekql.sqlite import Database
 
 from danube import __version__
-from danube.api.deps import get_db
-from danube.api.routes import health, jobs, pipelines
+from danube.api.deps import get_db, get_job_manager
+from danube.api.routes import control, health, jobs, pipelines
+from danube.orchestrator import JobManager
 from danube.rpc import ControlPlane
 from danube.rpc import router as rpc_router
 from danube.rpc.deps import get_control_plane
@@ -25,11 +26,17 @@ from danube.rpc.deps import get_control_plane
 API_V1_PREFIX = "/api/v1"
 
 
-def create_app(db: Database, control_plane: ControlPlane | None = None) -> FastAPI:
+def create_app(
+    db: Database,
+    control_plane: ControlPlane | None = None,
+    job_manager: JobManager | None = None,
+) -> FastAPI:
     """Build the FastAPI app, injecting ``db`` as the request-scoped database.
 
     Passing ``control_plane`` mounts the Coordinator RPC routes and injects it as
-    the request-scoped control plane.
+    the request-scoped control plane. Passing ``job_manager`` mounts the
+    control-plane endpoints (trigger, cancel, log stream) and injects it the same
+    way; without it the app is read-only.
     """
     app = FastAPI(title="Danube Master API", version=__version__)
 
@@ -49,4 +56,12 @@ def create_app(db: Database, control_plane: ControlPlane | None = None) -> FastA
 
         app.dependency_overrides[get_control_plane] = provide_control_plane
         app.include_router(rpc_router)
+
+    if job_manager is not None:
+
+        def provide_job_manager() -> JobManager:
+            return job_manager
+
+        app.dependency_overrides[get_job_manager] = provide_job_manager
+        app.include_router(control.router, prefix=API_V1_PREFIX)
     return app
