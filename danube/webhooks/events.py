@@ -3,13 +3,13 @@
 GitHub and GitLab speak different JSON, but the Master only cares about three
 things: which repository the event names, which branch it touched, and the head
 commit sha. `parse_github` and `parse_gitlab` reduce a decoded payload to that
-shape, returning ``None`` for events that should be cleanly ignored (anything
+shape, returning `None` for events that should be cleanly ignored (anything
 other than a branch push or an actionable pull/merge request — pings, tag pushes,
 branch deletions, and PR/MR actions that do not warrant a build).
 
 A payload whose *shape* is wrong for its declared event type (missing required
 fields, wrong JSON types) raises `WebhookParseError`; the HTTP layer maps that to
-a 400. Distinguishing "ignore this event" (``None``) from "this payload is
+a 400. Distinguishing "ignore this event" (`None`) from "this payload is
 malformed" (`WebhookParseError`) is deliberate: the former is a normal no-op, the
 latter is a client error worth surfacing.
 """
@@ -45,12 +45,12 @@ class WebhookEvent:
 
     @property
     def trigger_ref(self) -> str:
-        """The ``branch/sha`` reference recorded on jobs this event triggers."""
+        """The `branch/sha` reference recorded on jobs this event triggers."""
         return f"{self.branch}/{self.sha}"
 
 
 def parse_github(event_type: str, payload: dict[str, object]) -> WebhookEvent | None:
-    """Reduce a GitHub webhook to a `WebhookEvent`, or ``None`` to ignore it."""
+    """Reduce a GitHub webhook to a `WebhookEvent`, or `None` to ignore it."""
     if event_type == "push":
         branch = _branch_from_ref(_as_str(_field(payload, "ref")))
         sha = _as_str(_field(payload, "after"))
@@ -76,7 +76,7 @@ def parse_github(event_type: str, payload: dict[str, object]) -> WebhookEvent | 
 
 
 def parse_gitlab(event_type: str, payload: dict[str, object]) -> WebhookEvent | None:
-    """Reduce a GitLab webhook to a `WebhookEvent`, or ``None`` to ignore it."""
+    """Reduce a GitLab webhook to a `WebhookEvent`, or `None` to ignore it."""
     if event_type == "Push Hook":
         branch = _branch_from_ref(_as_str(_field(payload, "ref")))
         checkout_sha = _field(payload, "checkout_sha")
@@ -105,14 +105,14 @@ def parse_gitlab(event_type: str, payload: dict[str, object]) -> WebhookEvent | 
 
 
 def _branch_from_ref(ref: str) -> str | None:
-    """Return the branch name for a ``refs/heads/*`` ref, else ``None`` (e.g. tags)."""
+    """Return the branch name for a `refs/heads/*` ref, else `None` (e.g. tags)."""
     if not ref.startswith(_BRANCH_REF_PREFIX):
         return None
     return ref.removeprefix(_BRANCH_REF_PREFIX)
 
 
 def _collect_urls(repo: dict[str, object], fields: tuple[str, ...]) -> tuple[str, ...]:
-    """Gather the repository URL strings present under ``fields``.
+    """Gather the repository URL strings present under `fields`.
 
     Raises `WebhookParseError` if none are present: a push/PR with no resolvable
     repository URL is malformed, not merely unmatched.

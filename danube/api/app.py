@@ -33,13 +33,13 @@ def create_app(
     job_manager: JobManager | None = None,
     webhook_config: WebhookConfig | None = None,
 ) -> FastAPI:
-    """Build the FastAPI app, injecting ``db`` as the request-scoped database.
+    """Build the FastAPI app, injecting `db` as the request-scoped database.
 
-    Passing ``control_plane`` mounts the Coordinator RPC routes and injects it as
-    the request-scoped control plane. Passing ``job_manager`` mounts the
+    Passing `control_plane` mounts the Coordinator RPC routes and injects it as
+    the request-scoped control plane. Passing `job_manager` mounts the
     control-plane endpoints (trigger, cancel, log stream) and injects it the same
-    way; without it the app is read-only. Passing ``webhook_config`` alongside a
-    ``job_manager`` mounts the `/webhooks/*` ingestion routes; webhook triggers go
+    way; without it the app is read-only. Passing `webhook_config` alongside a
+    `job_manager` mounts the `/webhooks/*` ingestion routes; webhook triggers go
     through the same `JobManager`, so they share its dedup and concurrency cap.
     """
     app = FastAPI(title="Danube Master API", version=__version__)

@@ -3,8 +3,8 @@
 A pipeline matches an event when its `repo_url` names the same repository as the
 event and the event's branch passes the pipeline's `branch_filter`. Repository
 URLs are compared after `normalize_repo_url` collapses the cosmetic differences
-between clone forms — scheme, ``user@`` prefix, scp-style ``host:path``, a
-trailing ``.git``, trailing slashes, and case — so a pipeline configured with the
+between clone forms — scheme, `user@` prefix, scp-style `host:path`, a
+trailing `.git`, trailing slashes, and case — so a pipeline configured with the
 HTTPS URL still matches an event that only carries the SSH form, and vice versa.
 """
 
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 def normalize_repo_url(url: str) -> str:
-    """Reduce a Git URL to a ``host/path`` form for equality comparison."""
+    """Reduce a Git URL to a `host/path` form for equality comparison."""
     value = url.strip()
     if "://" in value:
         value = value.split("://", 1)[1]
@@ -34,7 +34,7 @@ def normalize_repo_url(url: str) -> str:
 
 
 def pipeline_matches(pipeline: Pipeline[Fetched], event: WebhookEvent) -> bool:
-    """Return whether ``event`` should trigger ``pipeline``.
+    """Return whether `event` should trigger `pipeline`.
 
     The repository must match one of the event's URLs, and — when the pipeline
     sets a `branch_filter` — the event's branch must equal it. A pipeline without

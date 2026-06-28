@@ -1,7 +1,7 @@
 """Tests for webhook repo-URL normalization.
 
-The clone forms (https, scp-style ssh, ssh://, trailing slash, ``.git`` suffix,
-mixed case) must collapse to one canonical ``host/path`` so a pipeline configured
+The clone forms (https, scp-style ssh, ssh://, trailing slash, `.git` suffix,
+mixed case) must collapse to one canonical `host/path` so a pipeline configured
 with any form matches an event carrying another. `pipeline_matches` itself (which
 needs a database-fetched `Pipeline[Fetched]`) is covered end-to-end in the webhook
 API integration tests.

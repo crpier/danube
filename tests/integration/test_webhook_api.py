@@ -165,6 +165,18 @@ def _github_push_body(repo_url: str, branch: str, sha: str) -> bytes:
     return json.dumps(payload).encode()
 
 
+def _github_pr_body(repo_url: str, branch: str, sha: str) -> bytes:
+    payload = {
+        "action": "opened",
+        "pull_request": {"head": {"ref": branch, "sha": sha}},
+        "repository": {
+            "clone_url": repo_url,
+            "html_url": repo_url.removesuffix(".git"),
+        },
+    }
+    return json.dumps(payload).encode()
+
+
 def _gitlab_push_body(repo_url: str, branch: str, sha: str) -> bytes:
     payload = {
         "ref": f"refs/heads/{branch}",
@@ -175,9 +187,13 @@ def _gitlab_push_body(repo_url: str, branch: str, sha: str) -> bytes:
 
 
 async def _post_github(
-    client: httpx.AsyncClient, body: bytes, *, signature: str | None = None
+    client: httpx.AsyncClient,
+    body: bytes,
+    *,
+    event: str = "push",
+    signature: str | None = None,
 ) -> httpx.Response:
-    headers = {"X-GitHub-Event": "push"}
+    headers = {"X-GitHub-Event": event}
     headers["X-Hub-Signature-256"] = (
         signature if signature is not None else (_github_sign(body))
     )
@@ -212,6 +228,24 @@ async def test_github_valid_push_enqueues_one_job_with_ref() -> None:
     for job in jobs:
         assert_eq(job["trigger_type"], TriggerType.WEBHOOK)
         assert_eq(job["trigger_ref"], "main/abc123")
+
+
+@test(mark="medium")
+async def test_github_pull_request_enqueues_job_with_head_ref() -> None:
+    h = await load_fixture(harness())
+    # Delete the `main`-filtered pipeline so only the any-branch one matches.
+    async with h.db.transaction() as tx:
+        _ = await tx.execute(delete(Pipeline).where(Pipeline.id.eq("p-main")))
+    body = _github_pr_body(REPO_URL, "feature", "pr789")
+
+    response = await _post_github(h.client, body, event="pull_request")
+
+    assert_eq(response.status_code, 200)
+    assert_eq(len(response.json()["triggered"]), 1)
+    jobs = await _jobs(h.client)
+    assert_eq(len(jobs), 1)
+    assert_eq(jobs[0]["trigger_type"], TriggerType.WEBHOOK)
+    assert_eq(jobs[0]["trigger_ref"], "feature/pr789")
 
 
 @test(mark="medium")

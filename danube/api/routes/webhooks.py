@@ -5,9 +5,9 @@ parses the body into a normalized `WebhookEvent`, resolves the configured
 pipelines it matches, and enqueues a run for each through the shared
 `JobManager` trigger path — so webhook runs get the same deduplication and
 concurrency cap as cron and manual triggers, recording `TriggerType.WEBHOOK` and
-a ``branch/sha`` `trigger_ref`.
+a `branch/sha` `trigger_ref`.
 
-Failure handling follows the issue and the observability doc:
+Failure handling, logged per the observability doc:
 
 - a request that fails signature/token verification is rejected `401` and
   enqueues nothing (logged at WARNING);
@@ -109,7 +109,7 @@ def _parse_event(
     event_type: str,
     body: bytes,
 ) -> WebhookEvent | None:
-    """Decode ``body`` and parse it, mapping any malformed payload to a 400."""
+    """Decode `body` and parse it, mapping any malformed payload to a 400."""
     try:
         loaded: object = json.loads(body)
     except json.JSONDecodeError:

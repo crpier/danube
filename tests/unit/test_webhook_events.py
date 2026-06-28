@@ -2,7 +2,7 @@
 
 These cover the normalization contract: branch pushes and actionable pull/merge
 requests become events carrying the repo URLs, branch, and head sha; tag pushes,
-branch deletions, and non-actionable PR/MR actions are cleanly ignored (``None``);
+branch deletions, and non-actionable PR/MR actions are cleanly ignored (`None`);
 and payloads malformed for their event type raise `WebhookParseError`.
 """
 
