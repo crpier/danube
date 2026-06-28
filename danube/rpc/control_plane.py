@@ -336,17 +336,12 @@ class ControlPlane:
             )
 
 
-def _capture_artifact(workspace_path: str, path: str, destination: Path) -> int:
-    """Resolve ``path`` inside the workspace, copy it to ``destination``, and return
-    the stored size. Runs in a worker thread; raises `ArtifactSourceError` if the
-    source escapes the workspace or does not exist."""
-    workspace = Path(workspace_path).resolve()
-    source = (workspace / path).resolve()
-    if not source.is_relative_to(workspace):
-        raise ArtifactSourceError(path, "escapes the job workspace")
-    if not source.exists():
-        raise ArtifactSourceError(path, "does not exist in the job workspace")
-    return _copy_artifact(source, destination)
+def _tree_size(path: Path) -> int:
+    """Total size in bytes of ``path``: its own size if a file, otherwise the sum
+    of every regular file beneath it."""
+    if path.is_file():
+        return path.stat().st_size
+    return sum(child.stat().st_size for child in path.rglob("*") if child.is_file())
 
 
 def _copy_artifact(source: Path, destination: Path) -> int:
@@ -364,12 +359,17 @@ def _copy_artifact(source: Path, destination: Path) -> int:
     return _tree_size(destination)
 
 
-def _tree_size(path: Path) -> int:
-    """Total size in bytes of ``path``: its own size if a file, otherwise the sum
-    of every regular file beneath it."""
-    if path.is_file():
-        return path.stat().st_size
-    return sum(child.stat().st_size for child in path.rglob("*") if child.is_file())
+def _capture_artifact(workspace_path: str, path: str, destination: Path) -> int:
+    """Resolve ``path`` inside the workspace, copy it to ``destination``, and return
+    the stored size. Runs in a worker thread; raises `ArtifactSourceError` if the
+    source escapes the workspace or does not exist."""
+    workspace = Path(workspace_path).resolve()
+    source = (workspace / path).resolve()
+    if not source.is_relative_to(workspace):
+        raise ArtifactSourceError(path, "escapes the job workspace")
+    if not source.exists():
+        raise ArtifactSourceError(path, "does not exist in the job workspace")
+    return _copy_artifact(source, destination)
 
 
 _TERMINAL_STATES = frozenset(

@@ -393,6 +393,30 @@ async def test_list_artifacts_for_job() -> None:
 
 
 @test(mark="medium")
+async def test_list_artifacts_for_unknown_job_is_404() -> None:
+    h = await load_fixture(harness())
+
+    response = await h.http.get("/api/v1/artifacts/no-such-job")
+
+    assert_eq(response.status_code, 404)
+
+
+@test(mark="medium")
+async def test_upload_artifact_with_invalid_token_is_rejected() -> None:
+    h = await load_fixture(harness())
+
+    with assert_raises(RpcError) as caught:
+        await h.danube(token="wrong").artifacts.upload(
+            "dist/app.tar.gz", name="app-bundle"
+        )
+
+    assert_eq(caught.exception.status_code, 401)
+    async with h.db.transaction() as tx:
+        rows = await tx.fetch_all(select(Artifact).where(Artifact.job_id.eq(JOB_ID)))
+    assert_eq(rows, [])
+
+
+@test(mark="medium")
 async def test_upload_after_job_end_is_rejected() -> None:
     h = await load_fixture(harness())
     _ = await h.danube().status.report("success")

@@ -157,10 +157,11 @@ artifacts.upload("dist/app.tar.gz", name="app-bundle")
 artifacts.upload("coverage/", name="coverage-report")
 ```
 
-Artifacts are stored under:
+Artifacts are stored under the server's configured `data_dir` (default
+`/var/lib/danube`, see `docs/configuration/server-config.md`):
 
 ```text
-/var/lib/danube/artifacts/<job_id>/<artifact_name>
+<data_dir>/artifacts/<job_id>/<artifact_name>
 ```
 
 ## Container Image Building
