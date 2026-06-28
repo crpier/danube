@@ -44,9 +44,18 @@ The control-plane routes (`run`, `cancel`, `logs/stream`) are mounted only when 
 
 **Behavior**:
 
-- Cron jobs evaluated every 60 seconds
+- The single trigger/enqueue path for every source (cron, manual, webhook); each
+  trigger records its `TriggerType` on the created job.
+- Cron schedules evaluated every 60 seconds against the current minute
+  (`run_cron(now)` takes the clock, so evaluation is deterministic under test). A
+  matching pipeline enqueues exactly one run per minute.
 - Webhook events queued and processed immediately
-- Deduplication for concurrent triggers on the same pipeline/ref
+- Deduplication for concurrent triggers on the same pipeline/ref: at most one
+  active job (`pending`/`scheduling`/`running`) exists per pipeline/ref, so a
+  concurrent trigger collapses onto the in-flight job.
+- Enforces a conservative global concurrency cap before handing a job to the
+  orchestrator; triggers beyond the cap stay `pending` and are dispatched as
+  running jobs finish (`execution-model.md`, Concurrency).
 
 ### Reaper
 
@@ -107,9 +116,10 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 
 **Behavior**:
 
-- Owns the task group that runs triggered jobs in the background so a trigger HTTP request returns immediately while the job runs to completion.
-- The task group is owned here (not in FastAPI's lifespan) so the control plane behaves identically under `httpx.ASGITransport` (which skips lifespan) and uvicorn.
-- Wraps the `JobOrchestrator` for trigger, cancel, and job/log-path lookups used by the HTTP routes.
+- The control plane's façade over the `Scheduler`: triggering a run delegates to the scheduler's shared enqueue path, so a manual HTTP trigger gets the same deduplication and global concurrency cap as cron- and webhook-sourced runs.
+- The scheduler owns the task group that runs triggered jobs in the background (and the cron loop) so a trigger HTTP request returns immediately while the job runs to completion.
+- The task group is owned by the scheduler (not in FastAPI's lifespan) so the control plane behaves identically under `httpx.ASGITransport` (which skips lifespan) and uvicorn.
+- Delegates cancel and job/log-path lookups straight to the `JobOrchestrator`.
 
 ### Runner Interface
 
