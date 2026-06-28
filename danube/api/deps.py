@@ -13,7 +13,9 @@ from typing import Annotated
 from fastapi import Depends, Query
 from snekql.sqlite import Database
 
+from danube.observability import Metrics, Tracer
 from danube.orchestrator import JobManager
+from danube.runner.base import Runner
 from danube.webhooks import WebhookConfig
 
 # Bound the page size so a client cannot ask for an unbounded result set.
@@ -60,6 +62,44 @@ def get_webhook_config() -> WebhookConfig:
 
 
 WebhookConfigDep = Annotated[WebhookConfig, Depends(get_webhook_config)]
+
+
+def get_metrics() -> Metrics:
+    """Dependency key for the process-wide metrics registry.
+
+    Always overridden via `app.dependency_overrides` in `create_app`; reaching
+    this body means the app was constructed without a metrics registry.
+    """
+    msg = "metrics dependency is not configured; build the app with create_app"
+    raise RuntimeError(msg)
+
+
+MetricsDep = Annotated[Metrics, Depends(get_metrics)]
+
+
+def get_tracer() -> Tracer:
+    """Dependency key for the request tracer.
+
+    Always overridden via `app.dependency_overrides` in `create_app`; reaching
+    this body means the app was constructed without a tracer.
+    """
+    msg = "tracer dependency is not configured; build the app with create_app"
+    raise RuntimeError(msg)
+
+
+TracerDep = Annotated[Tracer, Depends(get_tracer)]
+
+
+def get_runner() -> Runner | None:
+    """Dependency key for the optional readiness runner.
+
+    Returns `None` unless `create_app` was given a runner; the readiness probe
+    then limits itself to the database check.
+    """
+    return None
+
+
+RunnerDep = Annotated["Runner | None", Depends(get_runner)]
 
 
 @dataclass(frozen=True, slots=True)

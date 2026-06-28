@@ -103,7 +103,12 @@ class HealthResponse(BaseModel):
 
 
 class ReadyResponse(BaseModel):
-    """Readiness payload: whether dependencies (the database) are reachable."""
+    """Readiness payload: per-subsystem check results.
+
+    `status` is `"ready"` only when every entry in `checks` is `"ok"`; otherwise
+    the probe answers 503 and `status` is `"unavailable"`. `checks` always carries
+    `database`, and adds `runner`/`container_runtime` when a runner is wired.
+    """
 
     status: str
-    database: bool
+    checks: dict[str, str]
