@@ -32,3 +32,12 @@ class TriggerType(StrEnum):
     WEBHOOK = "webhook"
     CRON = "cron"
     MANUAL = "manual"
+
+
+class PermissionLevel(StrEnum):
+    """Access level a team holds on a pipeline, stored in
+    `pipeline_permissions.level`. Sourced from the Blueprint `permissions` list."""
+
+    ADMIN = "admin"
+    WRITE = "write"
+    READ = "read"
