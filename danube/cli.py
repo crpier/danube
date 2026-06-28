@@ -30,20 +30,6 @@ _REPORT_SECTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
-def format_report(report: ReconcileReport) -> str:
-    """Render a `ReconcileReport` as human-readable operator output."""
-    dump = report.model_dump()
-    lines: list[str] = []
-    total = 0
-    for field_name, description in _REPORT_SECTIONS:
-        entries: list[str] = dump[field_name]
-        total += len(entries)
-        lines.append(f"{description} ({field_name}): {len(entries)}")
-        lines.extend(f"  - {entry}" for entry in entries)
-    header = "No drift detected." if total == 0 else f"Found {total} discrepancies."
-    return "\n".join([header, *lines])
-
-
 async def _run_reconcile(args: argparse.Namespace) -> int:
     socket_path: Path = args.socket
     client = build_async_client(socket_path)
@@ -56,6 +42,20 @@ async def _run_reconcile(args: argparse.Namespace) -> int:
         await client.aclose()
         await db.close()
     return 0
+
+
+def format_report(report: ReconcileReport) -> str:
+    """Render a `ReconcileReport` as human-readable operator output."""
+    dump = report.model_dump()
+    lines: list[str] = []
+    total = 0
+    for field_name, description in _REPORT_SECTIONS:
+        entries: list[str] = dump[field_name]
+        total += len(entries)
+        lines.append(f"{description} ({field_name}): {len(entries)}")
+        lines.extend(f"  - {entry}" for entry in entries)
+    header = "No drift detected." if total == 0 else f"Found {total} discrepancies."
+    return "\n".join([header, *lines])
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -212,7 +212,8 @@ when a database is configured:
 ### Reconciliation and the CLI
 
 `reconcile()` compares `runner_state`/`jobs` against the live resources labelled
-`io.danube.managed=true` and reports: pods for finished jobs (`stale_pods`),
+`io.danube.managed=true` and reports: pods for finished or unrecognised jobs
+(`stale_pods`),
 containers with no tracked state (`orphaned_containers`), workspaces for inactive
 jobs (`stale_workspaces`), active jobs with no pod (`missing_pods`), and
 `cleanup_failed` rows (`failed_cleanups`). The operator command

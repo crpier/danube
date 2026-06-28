@@ -13,7 +13,7 @@ network/PID/IPC namespaces, all capabilities dropped, `no-new-privileges`, CPU/
 memory/pids limits, only the per-job workspace mounted, and a read-only root
 filesystem. Egress is denied by default by attaching the pod to an `internal`
 Podman network (`docs/architecture/networking.md`); allowlisted egress through a
-proxy is left to a later issue.
+proxy is handled separately.
 
 `runner_state` rows are written for the pod and both containers when a `Database`
 is supplied, so `reconcile()` (and `danube runner reconcile`) can compare tracked
@@ -27,13 +27,15 @@ import shutil
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
+import anyio.to_thread
 from snekql.sqlite import Database, delete, insert, select
 
 from danube.db.models import Job, RunnerState
 from danube.domain.enums import JobStatus
-from danube.domain.lifecycle import ACTIVE_STATES, TERMINAL_STATES
+from danube.domain.lifecycle import ACTIVE_STATES
 from danube.domain.runner_types import (
     ExecResult,
     ExecStepRequest,
@@ -76,7 +78,7 @@ STATE_CLEANUP_FAILED = "cleanup_failed"
 WORKSPACE_MOUNT = "/workspace"
 
 # Default cgroup limits. Conservative caps that keep a runaway job from starving
-# the appliance; pipelines can be given dedicated limits in a later issue.
+# the appliance; per-pipeline limits can override these later.
 DEFAULT_LIMITS = ResourceLimits(
     cpu_quota=200_000,  # 2 CPUs at the default 100ms period
     cpu_period=100_000,
@@ -90,9 +92,21 @@ DEFAULT_EGRESS_NETWORK = "danube-egress"
 
 DEFAULT_COORDINATOR_IMAGE = "localhost/danube-coordinator:latest"
 # Keep-alive command so the containers stay up for exec; the Coordinator agent
-# and real Worker entrypoints arrive with later issues. A portable `sh` loop
-# avoids relying on `sleep infinity`, which older BusyBox builds reject.
+# and real Worker entrypoints replace this later. A portable `sh` loop avoids
+# relying on `sleep infinity`, which older BusyBox builds reject.
 KEEP_ALIVE_COMMAND = ("/bin/sh", "-c", "while :; do sleep 3600; done")
+
+
+class ReconcileWithoutDatabaseError(Exception):
+    """`reconcile()` was called on a runner constructed without a `Database`.
+
+    Reconciliation reads the tracked `runner_state`/`jobs` rows, so it cannot run
+    without one. Constructing the runner without a database is still valid for the
+    job-execution path, which does not require persistence.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("reconcile requires a database; none was configured")
 
 
 def pod_name(job_id: str) -> str:
@@ -139,7 +153,10 @@ class LocalContainerRunner:
     async def start_job(self, request: StartJobRequest) -> JobHandle:
         job_id = request.job_id
         workspace = self._workspace_path(job_id)
-        workspace.mkdir(parents=True, exist_ok=True)
+        # Workspace creation is blocking filesystem IO; keep the event loop free.
+        await anyio.to_thread.run_sync(
+            partial(workspace.mkdir, parents=True, exist_ok=True)
+        )
 
         await self._ensure_images(request.worker_image)
         await self._podman.ensure_network(
@@ -209,7 +226,9 @@ class LocalContainerRunner:
             logger.exception("failed to remove pod for job %s", job.job_id)
             await self._mark_cleanup_failed(job.job_id)
             raise
-        shutil.rmtree(self._workspace_path(job.job_id), ignore_errors=True)
+        await anyio.to_thread.run_sync(
+            partial(shutil.rmtree, self._workspace_path(job.job_id), ignore_errors=True)
+        )
         await self._clear_state(job.job_id)
 
     # --- introspection ------------------------------------------------------
@@ -229,17 +248,17 @@ class LocalContainerRunner:
         """Compare tracked `runner_state` with live, labelled Podman resources.
 
         Requires a `Database`. Reports the discrepancy categories from
-        `local-runner.md`: pods for finished jobs, containers with no tracked
-        state, workspaces for inactive jobs, missing pods for running jobs, and
-        cleanups recorded as failed.
+        `local-runner.md`: pods for finished or unrecognised jobs, containers with
+        no tracked state, workspaces for inactive jobs, missing pods for running
+        jobs, and cleanups recorded as failed.
         """
         if self._db is None:
-            msg = "reconcile requires a database; none was configured"
-            raise RuntimeError(msg)
+            raise ReconcileWithoutDatabaseError
 
-        job_status = await self._job_statuses()
-        tracked = await self._tracked_job_ids()
-        failed = await self._failed_cleanup_job_ids()
+        db = self._db
+        job_status = await self._job_statuses(db)
+        tracked = await self._tracked_job_ids(db)
+        failed = await self._failed_cleanup_job_ids(db)
 
         pods = await self._podman.list_pods(MANAGED_SELECTOR)
         containers = await self._podman.list_containers(MANAGED_SELECTOR)
@@ -247,11 +266,14 @@ class LocalContainerRunner:
             job_id for pod in pods if (job_id := pod.labels.get(LABEL_JOB_ID))
         }
 
+        # A pod is stale unless its job is still active: this covers both finished
+        # (terminal) jobs and pods whose job_id has no `Job` row at all (deleted or
+        # unknown), neither of which should still own a pod.
         stale_pods = sorted(
             pod.name
             for pod in pods
             if (job_id := pod.labels.get(LABEL_JOB_ID))
-            and job_status.get(job_id) in TERMINAL_STATES
+            and job_status.get(job_id) not in ACTIVE_STATES
         )
         orphaned_containers = sorted(
             container.name
@@ -263,9 +285,10 @@ class LocalContainerRunner:
             for job_id, status in job_status.items()
             if status in ACTIVE_STATES and job_id not in live_pod_jobs
         )
+        workspace_dirs = await self._workspace_dirs()
         stale_workspaces = sorted(
             path.name
-            for path in self._workspace_dirs()
+            for path in workspace_dirs
             if job_status.get(path.name) not in ACTIVE_STATES
         )
 
@@ -327,7 +350,11 @@ class LocalContainerRunner:
     def _workspace_path(self, job_id: str) -> Path:
         return self._data_dir / "workspaces" / job_id
 
-    def _workspace_dirs(self) -> list[Path]:
+    async def _workspace_dirs(self) -> list[Path]:
+        # Directory scanning is blocking filesystem IO; run it off the event loop.
+        return await anyio.to_thread.run_sync(self._list_workspace_dirs)
+
+    def _list_workspace_dirs(self) -> list[Path]:
         root = self._data_dir / "workspaces"
         if not root.is_dir():
             return []
@@ -376,21 +403,18 @@ class LocalContainerRunner:
                 )
             )
 
-    async def _job_statuses(self) -> dict[str, JobStatus]:
-        assert self._db is not None
-        async with self._db.transaction() as tx:
+    async def _job_statuses(self, db: Database) -> dict[str, JobStatus]:
+        async with db.transaction() as tx:
             rows = await tx.fetch_all(select(Job.id, Job.status).all())
         return {job_id: JobStatus(status) for job_id, status in rows}
 
-    async def _tracked_job_ids(self) -> set[str]:
-        assert self._db is not None
-        async with self._db.transaction() as tx:
+    async def _tracked_job_ids(self, db: Database) -> set[str]:
+        async with db.transaction() as tx:
             rows = await tx.fetch_all(select(RunnerState.job_id).all())
         return {job_id for job_id in rows if job_id is not None}
 
-    async def _failed_cleanup_job_ids(self) -> set[str]:
-        assert self._db is not None
-        async with self._db.transaction() as tx:
+    async def _failed_cleanup_job_ids(self, db: Database) -> set[str]:
+        async with db.transaction() as tx:
             rows = await tx.fetch_all(
                 select(RunnerState.job_id).where(
                     RunnerState.status.eq(STATE_CLEANUP_FAILED)

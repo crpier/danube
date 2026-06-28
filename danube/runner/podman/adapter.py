@@ -102,6 +102,11 @@ class ContainerSpec:
     work_dir: str | None = None
     user: str | None = None
     privileged: bool = False
+    # Namespace isolation. Defaults keep the container out of the host PID/IPC
+    # namespaces; the network namespace is the pod's (an internal network), never
+    # the host's. Set these True only for a deliberate, audited escape hatch.
+    host_pid: bool = False
+    host_ipc: bool = False
     read_only_rootfs: bool = False
     no_new_privileges: bool = True
     cap_drop: Sequence[str] = ("ALL",)
@@ -423,24 +428,28 @@ def _label_filter(labels: Mapping[str, str]) -> dict[str, str]:
     return {"filters": json.dumps({"label": selectors})}
 
 
-def _s(value: Any) -> str:
+def _to_str(value: Any) -> str:
     """Coerce a JSON value (typed `Any`) to `str`, mapping `None` to empty."""
     return "" if value is None else str(value)
 
 
 def _summarize_pod(item: Mapping[str, Any]) -> ResourceSummary:
     return ResourceSummary(
-        id=_s(item.get("Id")),
-        name=_s(item.get("Name")),
+        id=_to_str(item.get("Id")),
+        name=_to_str(item.get("Name")),
         labels=_str_map(item.get("Labels")),
     )
 
 
 def _summarize_container(item: Mapping[str, Any]) -> ResourceSummary:
     names = item.get("Names")
-    name = _s(names[0]) if isinstance(names, list) and names else _s(item.get("Id"))
+    name = (
+        _to_str(names[0])
+        if isinstance(names, list) and names
+        else _to_str(item.get("Id"))
+    )
     return ResourceSummary(
-        id=_s(item.get("Id")),
+        id=_to_str(item.get("Id")),
         name=name,
         labels=_str_map(item.get("Labels")),
     )
@@ -450,7 +459,7 @@ def _str_map(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     mapping = cast("Mapping[Any, Any]", value)
-    return {_s(key): _s(val) for key, val in mapping.items()}
+    return {_to_str(key): _to_str(item_value) for key, item_value in mapping.items()}
 
 
 def _container_body(spec: ContainerSpec) -> dict[str, Any]:
@@ -475,6 +484,11 @@ def _container_body(spec: ContainerSpec) -> dict[str, Any]:
         body["user"] = spec.user
     if spec.no_new_privileges:
         body["security_opt"] = ["no-new-privileges"]
+    # Explicit PID/IPC isolation rather than relying on Podman's defaults. The
+    # network namespace comes from the pod's internal network, so it is not set
+    # here.
+    body["pidns"] = {"nsmode": "host" if spec.host_pid else "private"}
+    body["ipcns"] = {"nsmode": "host" if spec.host_ipc else "private"}
     if spec.mounts:
         body["mounts"] = [
             {

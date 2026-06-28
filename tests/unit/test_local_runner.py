@@ -27,6 +27,7 @@ from danube.runner.local import (
     LABEL_PIPELINE_ID,
     LABEL_RESOURCE,
     LocalContainerRunner,
+    ReconcileWithoutDatabaseError,
     pod_name,
 )
 from danube.runner.podman import (
@@ -538,7 +539,7 @@ async def test_cleanup_failure_records_state_and_reraises() -> None:
 @test(mark="fast")
 async def test_reconcile_without_db_raises() -> None:
     runner = LocalContainerRunner(FakePodman(), load_fixture(data_dir()))
-    with assert_raises(RuntimeError):
+    with assert_raises(ReconcileWithoutDatabaseError):
         _ = await runner.reconcile()
 
 
@@ -551,10 +552,12 @@ async def test_reconcile_classifies_drift() -> None:
     runner = LocalContainerRunner(podman, data, db=db)
 
     # Live Podman resources: a pod for the still-running job, a pod for a
-    # finished job (stale), and a container for a job with no tracked state.
+    # finished job (stale), a pod whose job_id has no `Job` row (also stale), and
+    # a container for a job with no tracked state.
     podman.pods = [
         _pod_summary("run-ok"),
         _pod_summary("fin-stale"),
+        _pod_summary("ghost"),
     ]
     podman.containers = [
         ResourceSummary(
@@ -566,7 +569,7 @@ async def test_reconcile_classifies_drift() -> None:
 
     report = await runner.reconcile()
 
-    assert_eq(report.stale_pods, [pod_name("fin-stale")])
+    assert_eq(report.stale_pods, [pod_name("fin-stale"), pod_name("ghost")])
     assert_eq(report.orphaned_containers, ["danube-job-orphan-worker"])
     assert_eq(report.missing_pods, ["run-missing"])
     assert_eq(report.stale_workspaces, ["fin-stale"])

@@ -74,6 +74,9 @@ def test_container_body_encodes_security_defaults() -> None:
     assert_eq(body["cap_drop"], ["ALL"])
     assert_eq(body["cap_add"], [])
     assert_eq(body["security_opt"], ["no-new-privileges"])
+    # PID and IPC namespaces are explicitly private, never the host's.
+    assert_eq(body["pidns"], {"nsmode": "private"})
+    assert_eq(body["ipcns"], {"nsmode": "private"})
     assert_eq(body["pod"], "danube-job-j1")
     assert_eq(body["env"], {"FOO": "bar"})
     assert_eq(
@@ -111,3 +114,20 @@ def test_container_body_omits_no_new_privileges_when_disabled() -> None:
 
     assert "security_opt" not in body
     assert "resource_limits" not in body
+
+
+@test(mark="fast")
+def test_container_body_encodes_host_namespace_escape_hatch() -> None:
+    spec = ContainerSpec(
+        name="c",
+        image="busybox",
+        pod="p",
+        labels={},
+        host_pid=True,
+        host_ipc=True,
+    )
+
+    body = _container_body(spec)
+
+    assert_eq(body["pidns"], {"nsmode": "host"})
+    assert_eq(body["ipcns"], {"nsmode": "host"})
