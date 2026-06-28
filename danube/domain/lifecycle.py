@@ -4,6 +4,10 @@ Encodes the legal transitions from `docs/architecture/execution-model.md`:
 
     pending -> scheduling -> running -> {success | failure | timeout | cancelled}
 
+`scheduling` may also fail directly: if the runner cannot create the job
+environment (workspace/containers/network), the job moves straight to `failure`
+without ever reaching `running`.
+
 Terminal states (`success`, `failure`, `timeout`, `cancelled`) allow no further
 transitions.
 """
@@ -12,7 +16,7 @@ from danube.domain.enums import JobStatus
 
 ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.PENDING: frozenset({JobStatus.SCHEDULING}),
-    JobStatus.SCHEDULING: frozenset({JobStatus.RUNNING}),
+    JobStatus.SCHEDULING: frozenset({JobStatus.RUNNING, JobStatus.FAILURE}),
     JobStatus.RUNNING: frozenset(
         {
             JobStatus.SUCCESS,
