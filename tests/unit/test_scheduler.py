@@ -127,10 +127,10 @@ async def _job_status(db: Database, job_id: str) -> str:
 
 @test(mark="medium")
 async def test_enqueue_creates_pending_job_with_trigger_type() -> None:
-    e = await load_fixture(env())
-    await _seed_pipeline(e.db, "p1")
+    environment = await load_fixture(env())
+    await _seed_pipeline(environment.db, "p1")
 
-    job = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "main")
+    job = await environment.scheduler.enqueue("p1", TriggerType.MANUAL, "main")
 
     assert_eq(job.pipeline_id, "p1")
     assert_eq(job.trigger_type, TriggerType.MANUAL)
@@ -139,36 +139,40 @@ async def test_enqueue_creates_pending_job_with_trigger_type() -> None:
 
 @test(mark="medium")
 async def test_enqueue_unknown_pipeline_raises() -> None:
-    e = await load_fixture(env())
+    environment = await load_fixture(env())
 
     with assert_raises(PipelineNotFoundError):
-        _ = await e.scheduler.enqueue("nope", TriggerType.MANUAL)
+        _ = await environment.scheduler.enqueue("nope", TriggerType.MANUAL)
 
 
 @test(mark="medium")
 async def test_duplicate_triggers_dedup_to_one_active_job() -> None:
-    async with _make_env(FakeRunner(coordinator=_sleep_forever)) as e:
-        await _seed_pipeline(e.db, "p1")
+    async with _make_env(FakeRunner(coordinator=_sleep_forever)) as environment:
+        await _seed_pipeline(environment.db, "p1")
 
-        first = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "main")
-        second = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "main")
-        other_ref = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "release")
+        first = await environment.scheduler.enqueue("p1", TriggerType.MANUAL, "main")
+        second = await environment.scheduler.enqueue("p1", TriggerType.MANUAL, "main")
+        other_ref = await environment.scheduler.enqueue(
+            "p1", TriggerType.MANUAL, "release"
+        )
 
         # Same pipeline/ref collapses onto the existing active job; a different
         # ref is a distinct job.
         assert_eq(second.id, first.id)
         assert other_ref.id != first.id
-        assert_eq(len(await _all_jobs(e.db)), 2)
+        assert_eq(len(await _all_jobs(environment.db)), 2)
 
 
 @test(mark="medium")
 async def test_manual_trigger_reuses_dedup_path() -> None:
-    """A manual trigger (the #19 path) dedups exactly like any other source."""
-    async with _make_env(FakeRunner(coordinator=_sleep_forever)) as e:
-        await _seed_pipeline(e.db, "p1")
+    """A manual trigger dedups exactly like any other source."""
+    async with _make_env(FakeRunner(coordinator=_sleep_forever)) as environment:
+        await _seed_pipeline(environment.db, "p1")
 
-        manual = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "main")
-        cron_same_ref = await e.scheduler.enqueue("p1", TriggerType.CRON, "main")
+        manual = await environment.scheduler.enqueue("p1", TriggerType.MANUAL, "main")
+        cron_same_ref = await environment.scheduler.enqueue(
+            "p1", TriggerType.CRON, "main"
+        )
 
         assert_eq(cron_same_ref.id, manual.id)
 
@@ -177,17 +181,17 @@ async def test_manual_trigger_reuses_dedup_path() -> None:
 async def test_global_concurrency_cap_keeps_excess_pending() -> None:
     async with _make_env(
         FakeRunner(coordinator=_sleep_forever), max_concurrent_jobs=1
-    ) as e:
-        await _seed_pipeline(e.db, "p1")
+    ) as environment:
+        await _seed_pipeline(environment.db, "p1")
 
-        running = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "r1")
-        _ = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "r2")
-        _ = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "r3")
+        running = await environment.scheduler.enqueue("p1", TriggerType.MANUAL, "r1")
+        _ = await environment.scheduler.enqueue("p1", TriggerType.MANUAL, "r2")
+        _ = await environment.scheduler.enqueue("p1", TriggerType.MANUAL, "r3")
 
         # The first job is handed to the orchestrator and reaches `running`; the
         # other two exceed the cap and stay `pending`.
-        await _wait_until(lambda: _running(e.db, running.id))
-        counts = await _status_counts(e.db)
+        await _wait_until(lambda: _running(environment.db, running.id))
+        counts = await _status_counts(environment.db)
         assert_eq(counts.get(JobStatus.PENDING, 0), 2)
         assert_eq(counts.get(JobStatus.RUNNING, 0), 1)
 
@@ -196,50 +200,52 @@ async def test_global_concurrency_cap_keeps_excess_pending() -> None:
 async def test_freed_capacity_dispatches_a_pending_job() -> None:
     async with _make_env(
         FakeRunner(coordinator=_sleep_forever), max_concurrent_jobs=1
-    ) as e:
-        await _seed_pipeline(e.db, "p1")
-        first = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "r1")
-        _ = await e.scheduler.enqueue("p1", TriggerType.MANUAL, "r2")
-        await _wait_until(lambda: _running(e.db, first.id))
+    ) as environment:
+        await _seed_pipeline(environment.db, "p1")
+        first = await environment.scheduler.enqueue("p1", TriggerType.MANUAL, "r1")
+        _ = await environment.scheduler.enqueue("p1", TriggerType.MANUAL, "r2")
+        await _wait_until(lambda: _running(environment.db, first.id))
 
         # Cancel the running job; its freed slot must dispatch a pending one.
-        await e.orchestrator.request_cancel(first.id)
+        await environment.orchestrator.request_cancel(first.id)
 
-        await _wait_until(lambda: _has_running(e.db, exclude=first.id))
-        counts = await _status_counts(e.db)
+        await _wait_until(lambda: _has_running(environment.db, exclude=first.id))
+        counts = await _status_counts(environment.db)
         assert_eq(counts.get(JobStatus.RUNNING, 0), 1)
         assert_eq(counts.get(JobStatus.PENDING, 0), 0)
 
 
 @test(mark="medium")
 async def test_cron_enqueues_one_job_per_matching_minute() -> None:
-    e = await load_fixture(env())
-    await _seed_pipeline(e.db, "p_cron", cron_schedule="* * * * *")
+    environment = await load_fixture(env())
+    await _seed_pipeline(environment.db, "p_cron", cron_schedule="* * * * *")
 
-    fired = await e.scheduler.run_cron(T0)
+    fired = await environment.scheduler.run_cron(T0)
     assert_eq(len(fired), 1)
     # A second evaluation in the same minute must not enqueue a duplicate.
-    again = await e.scheduler.run_cron(T0)
+    again = await environment.scheduler.run_cron(T0)
     assert_eq(len(again), 0)
-    assert_eq(len(await _all_jobs(e.db)), 1)
-    assert_eq((await _all_jobs(e.db))[0].trigger_type, TriggerType.CRON)
+    assert_eq(len(await _all_jobs(environment.db)), 1)
+    assert_eq((await _all_jobs(environment.db))[0].trigger_type, TriggerType.CRON)
 
     # Let the first run finish so it no longer dedups the next minute's trigger.
-    await _wait_until(lambda: _no_active(e.db))
-    next_minute = await e.scheduler.run_cron(T0 + timedelta(minutes=1))
+    await _wait_until(lambda: _no_active(environment.db))
+    next_minute = await environment.scheduler.run_cron(T0 + timedelta(minutes=1))
     assert_eq(len(next_minute), 1)
-    assert_eq(len(await _all_jobs(e.db)), 2)
+    assert_eq(len(await _all_jobs(environment.db)), 2)
 
 
 @test(mark="medium")
 async def test_cron_does_not_fire_on_a_non_matching_minute() -> None:
-    e = await load_fixture(env())
-    await _seed_pipeline(e.db, "p_cron", cron_schedule="0 0 * * *")
+    environment = await load_fixture(env())
+    await _seed_pipeline(environment.db, "p_cron", cron_schedule="0 0 * * *")
 
-    fired = await e.scheduler.run_cron(datetime(2026, 1, 1, 12, 30, 0, tzinfo=UTC))
+    fired = await environment.scheduler.run_cron(
+        datetime(2026, 1, 1, 12, 30, 0, tzinfo=UTC)
+    )
 
     assert_eq(fired, [])
-    assert_eq(await _all_jobs(e.db), [])
+    assert_eq(await _all_jobs(environment.db), [])
 
 
 async def _running(db: Database, job_id: str) -> bool:

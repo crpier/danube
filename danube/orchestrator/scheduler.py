@@ -1,7 +1,7 @@
 """Scheduler: the single trigger/enqueue path for pipeline jobs.
 
 `Scheduler` is the one place a pipeline run is born, whatever the source — cron,
-a manual request (#19), or a webhook (#23). Every source calls `enqueue`, which
+a manual request, or a webhook. Every source calls `enqueue`, which
 records the originating `TriggerType` on the job and applies two policies before a
 job is ever handed to the orchestrator:
 
@@ -153,7 +153,17 @@ class Scheduler:
         """
         minute = now.replace(second=0, microsecond=0)
         triggered: list[Job[Fetched]] = []
-        for pipeline in await self._cron_pipelines():
+        cron_pipelines = await self._cron_pipelines()
+        # Forget last-fired bookkeeping for pipelines that no longer carry a cron
+        # schedule, so the map cannot accumulate entries for deleted pipelines
+        # across a long-lived scheduler.
+        scheduled_ids = {pipeline.id for pipeline in cron_pipelines}
+        self._last_cron_fired = {
+            pipeline_id: fired_minute
+            for pipeline_id, fired_minute in self._last_cron_fired.items()
+            if pipeline_id in scheduled_ids
+        }
+        for pipeline in cron_pipelines:
             schedule = pipeline.cron_schedule
             if schedule is None:
                 continue
