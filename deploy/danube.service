@@ -1,0 +1,26 @@
+[Unit]
+Description=Danube CI/CD Appliance
+Documentation=https://github.com/crpier/danube
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=danube
+Group=danube
+WorkingDirectory=/var/lib/danube
+# `danube` is installed for the danube user (e.g. `uv tool install danube`).
+Environment="PATH=/home/danube/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/danube/.local/bin/danube master --config /etc/danube/danube.toml
+Restart=on-failure
+RestartSec=10s
+
+# Hardening. Danube only needs to write under its data directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/danube
+
+[Install]
+WantedBy=multi-user.target

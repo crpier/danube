@@ -1,0 +1,48 @@
+# Example Danube Master configuration.
+#
+# Copy to /etc/danube/danube.toml (chmod 600) or generate a starter with
+# `danube init`. See docs/configuration/server-config.md for the full reference.
+#
+# Loading order: built-in defaults -> this file -> environment variables.
+# Environment variables (DANUBE_*) override values set here.
+
+[server]
+bind_address = "0.0.0.0:8080"
+data_dir = "/var/lib/danube"
+
+[database]
+path = "/var/lib/danube/danube.db"
+
+[logging]
+# One of: debug, info, warning, error.
+level = "info"
+
+[observability]
+metrics_enabled = true
+traces_enabled = false
+# OTLP collector endpoint; required when traces_enabled = true.
+otel_endpoint = ""
+
+[auth]
+# UI/API authentication and team-based RBAC. Disabled by default; health and
+# metrics endpoints are never gated by auth.
+enabled = false
+# issuer = "https://idp.example.com"
+# audience = "danube"
+# algorithm = "HS256"            # "HS256" (shared secret) or "RS256" (OIDC public key)
+# hs256_secret = ""              # required for HS256
+# public_key = "/var/lib/danube/keys/oidc_public.pem"   # required for RS256
+# leeway_seconds = 0
+
+# Blueprint (GitOps) configuration repository. Uncomment to enable sync.
+# [config_repo]
+# url = "git@github.com:myorg/danube-blueprint.git"
+# branch = "main"
+# sync_interval = "60s"
+# ssh_key_path = "/var/lib/danube/keys/git_deploy_key"
+
+# Inbound Git webhook authentication. Leave a value empty to disable that
+# provider's endpoint.
+# [webhooks]
+# github_secret = ""
+# gitlab_token = ""

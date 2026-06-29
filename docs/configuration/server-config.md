@@ -10,6 +10,10 @@ Danube requires a small local server configuration file. Most operational config
 
 **Format**: TOML
 
+Generate a starter file with `danube init` (it also creates the data directory and
+encryption key), or copy the annotated `deploy/danube.toml.example` from the
+repository. The Master reads this file via `danube master --config <path>`.
+
 ## Minimal Configuration
 
 ```toml

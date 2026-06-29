@@ -9,19 +9,15 @@ toggle observability before full server-config parsing lands.
 
 from __future__ import annotations
 
-import os
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
+
+from danube.configsource import flag_source, str_source
 
 METRICS_ENABLED_ENV = "DANUBE_METRICS_ENABLED"
 TRACES_ENABLED_ENV = "DANUBE_TRACES_ENABLED"
 OTEL_ENDPOINT_ENV = "DANUBE_OTEL_ENDPOINT"
-
-
-def _env_flag(name: str, *, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,9 +31,23 @@ class ObservabilityConfig:
     otel_endpoint: str | None = None
 
     @classmethod
-    def from_env(cls) -> ObservabilityConfig:
+    def from_sources(
+        cls, table: Mapping[str, Any] | None = None
+    ) -> ObservabilityConfig:
+        """Build from a `[observability]` table, with env vars overriding it."""
+        table = table or {}
         return cls(
-            metrics_enabled=_env_flag(METRICS_ENABLED_ENV, default=True),
-            traces_enabled=_env_flag(TRACES_ENABLED_ENV, default=False),
-            otel_endpoint=os.environ.get(OTEL_ENDPOINT_ENV),
+            metrics_enabled=flag_source(
+                METRICS_ENABLED_ENV, table, "metrics_enabled", default=True
+            ),
+            traces_enabled=flag_source(
+                TRACES_ENABLED_ENV, table, "traces_enabled", default=False
+            ),
+            otel_endpoint=str_source(
+                OTEL_ENDPOINT_ENV, table, "otel_endpoint", default=None
+            ),
         )
+
+    @classmethod
+    def from_env(cls) -> ObservabilityConfig:
+        return cls.from_sources()
