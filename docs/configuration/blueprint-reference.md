@@ -162,6 +162,7 @@ python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt(
     "script": "danubefile.py",
     "max_duration_seconds": 3600,
     "workspace_size_gb": 10,
+    "egress": false,
     "worker": {
       "image": "node:20-alpine",
       "resources": {
@@ -179,6 +180,15 @@ python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt(
   }
 }
 ```
+
+`egress` is the job-level outbound-network posture and defaults to `false`. With
+`egress: false` the job pod attaches to an `internal` (no-route) Podman network, so
+build steps cannot reach the internet; `egress: true` attaches a normal outbound
+network instead. It is a whole-job grant, never per-step, and is version-controlled in
+the Blueprint so the grant is auditable under GitOps
+(`docs/adr/0002-default-deny-egress.md`). A filtered allowlist (the
+`networking.egress_allowlist` shown above) needs an egress proxy and is not yet
+implemented; today the field is binary deny/allow.
 
 Pipeline-level networking settings narrow or extend global policy according to the server's configured rules.
 

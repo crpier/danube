@@ -68,6 +68,7 @@ ignore = [
   "FBT003",  # Allow boolean positional values in function calls. This is useful for assert_* function.
   "N802",    # Don't force function names to be snake_case. Useful e.g. when writing tests for classes.
   "N999",    # Don't force module names to be snake_case. Useful e.g. when writing tests for classes.
+  "PLR0913", # Allow many arguments: test object-factory helpers take one keyword knob per overridable field.
   "PLR2004", # Allow magic numbers.
   "RUF029",  # Allow async functions without async features.
   "S101",    # Allow use of assert.

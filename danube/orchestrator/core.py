@@ -231,6 +231,10 @@ class JobOrchestrator:
                             pipeline_id=job.pipeline_id,
                             worker_image=pipeline.worker_image,
                             max_duration_seconds=pipeline.max_duration_seconds,
+                            # Rows added before migration 0027 read `egress` back
+                            # as NULL; coerce that to default-deny (False) rather
+                            # than feed `None` into the non-optional `bool` field.
+                            egress=bool(pipeline.egress),
                         )
                     ),
                 )

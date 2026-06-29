@@ -57,6 +57,8 @@ def test_start_job_request_defaults() -> None:
     req = StartJobRequest(job_id="j1", pipeline_id="p1", worker_image="img")
     assert_eq(req.env, {})
     assert_eq(req.max_duration_seconds, None)
+    # Egress is denied by default (`docs/adr/0002-default-deny-egress.md`).
+    assert_eq(req.egress, False)
 
 
 @test(mark="fast")

@@ -39,6 +39,7 @@ CREATE TABLE pipelines (
     worker_image TEXT NOT NULL,
     max_duration_seconds INTEGER DEFAULT 3600,
     workspace_size_gb INTEGER DEFAULT 5,
+    egress INTEGER DEFAULT 0, -- job-level outbound network opt-in (0 = default-deny)
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -25,6 +25,11 @@ class StartJobRequest(_Frozen):
     worker_image: NonEmptyStr
     env: dict[str, str] = Field(default_factory=dict)
     max_duration_seconds: int | None = Field(default=None, gt=0)
+    # Job-level egress posture from the pipeline's Blueprint. Default-deny: the
+    # runner attaches the pod to an `internal` (no-egress) network unless this is
+    # set, in which case it attaches a normal outbound network instead
+    # (`docs/adr/0002-default-deny-egress.md`).
+    egress: bool = False
 
 
 class JobHandle(_Frozen):

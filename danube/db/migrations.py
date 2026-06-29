@@ -157,4 +157,10 @@ MIGRATIONS: dict[str, str] = {
     "0026_index_idx_steps_job_id": (
         'CREATE INDEX "idx_steps_job_id" ON "steps" ("job_id")'
     ),
+    # Job-level egress opt-in (#52, `docs/adr/0002-default-deny-egress.md`). A
+    # plain nullable ADD COLUMN: the model declares `egress` `nullable=True` with a
+    # client default, so no server DEFAULT is needed and strict verify stays clean.
+    # Pre-existing rows read back NULL, which the Blueprint reconcile overwrites on
+    # the next apply; `0` means default-deny.
+    "0027_pipelines_add_egress": 'ALTER TABLE "pipelines" ADD COLUMN "egress" INTEGER',
 }

@@ -57,6 +57,7 @@ def _pipeline(
     *,
     image: str = "node:20-alpine",
     cron: str | None = None,
+    egress: bool = False,
     permissions: list[PermissionSpec] | None = None,
 ) -> PipelineDocument:
     triggers = [PipelineTrigger(on="cron", schedule=cron)] if cron is not None else []
@@ -68,6 +69,7 @@ def _pipeline(
             repository=f"https://example.test/{name}.git",
             worker=WorkerSpec(image=image),
             triggers=triggers,
+            egress=egress,
             permissions=permissions or [],
         ),
     )
@@ -179,6 +181,48 @@ async def test_only_the_changed_pipeline_is_updated() -> None:
             select(Pipeline).where(Pipeline.name.eq("frontend"))
         )
     assert_eq(frontend.worker_image, "node:22-alpine")
+
+
+@test(mark="fast")
+async def test_pipeline_defaults_to_egress_denied() -> None:
+    database = await load_fixture(db())
+    blueprint = _blueprint(
+        teams=[_team("engineering", [])],
+        pipelines=[_pipeline("frontend", "engineering")],
+    )
+
+    _ = await apply_blueprint(database, blueprint)
+
+    async with database.transaction() as tx:
+        frontend = await tx.fetch_one(
+            select(Pipeline).where(Pipeline.name.eq("frontend"))
+        )
+    assert_eq(frontend.egress, False)
+
+
+@test(mark="fast")
+async def test_changing_egress_updates_the_pipeline() -> None:
+    database = await load_fixture(db())
+    teams = [_team("engineering", [])]
+    _ = await apply_blueprint(
+        database,
+        _blueprint(teams=teams, pipelines=[_pipeline("frontend", "engineering")]),
+    )
+
+    diff = await apply_blueprint(
+        database,
+        _blueprint(
+            teams=teams,
+            pipelines=[_pipeline("frontend", "engineering", egress=True)],
+        ),
+    )
+
+    assert_eq(diff.pipelines.updated, ["frontend"])
+    async with database.transaction() as tx:
+        frontend = await tx.fetch_one(
+            select(Pipeline).where(Pipeline.name.eq("frontend"))
+        )
+    assert_eq(frontend.egress, True)
 
 
 @test(mark="fast")

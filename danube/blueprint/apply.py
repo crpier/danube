@@ -109,6 +109,7 @@ class _DesiredPipeline:
     worker_image: str
     max_duration_seconds: int
     workspace_size_gb: int
+    egress: bool
 
 
 async def apply_blueprint(db: Database, blueprint: Blueprint) -> BlueprintDiff:
@@ -220,6 +221,7 @@ def _desired_pipelines(blueprint: Blueprint) -> dict[str, _DesiredPipeline]:
             worker_image=pipeline.spec.worker.image,
             max_duration_seconds=pipeline.spec.max_duration_seconds,
             workspace_size_gb=pipeline.spec.workspace_size_gb,
+            egress=pipeline.spec.egress,
         )
     return desired
 
@@ -349,6 +351,7 @@ async def _upsert_pipelines(
                         worker_image=want.worker_image,
                         max_duration_seconds=want.max_duration_seconds,
                         workspace_size_gb=want.workspace_size_gb,
+                        egress=want.egress,
                     )
                 )
             )
@@ -364,6 +367,7 @@ async def _upsert_pipelines(
                 .set(Pipeline.worker_image.to(want.worker_image))
                 .set(Pipeline.max_duration_seconds.to(want.max_duration_seconds))
                 .set(Pipeline.workspace_size_gb.to(want.workspace_size_gb))
+                .set(Pipeline.egress.to(want.egress))
                 .set(Pipeline.updated_at.to(CurrentTimestamp))
                 .where(Pipeline.id.eq(pipeline_id))
             )
@@ -380,6 +384,7 @@ def _pipeline_differs(existing: Pipeline[Fetched], want: _DesiredPipeline) -> bo
         or existing.worker_image != want.worker_image
         or existing.max_duration_seconds != want.max_duration_seconds
         or existing.workspace_size_gb != want.workspace_size_gb
+        or existing.egress != want.egress
     )
 
 
