@@ -149,7 +149,7 @@ The runner should request secure Podman settings by default:
 - no host IPC namespace
 - no arbitrary host mounts
 - drop unnecessary capabilities
-- set CPU, memory, and pids limits
+- set CPU, memory, and pids limits — resolved per job from the pipeline's requested `limits` and the operator's Resource Ceiling (`[limits]`): absent fields fall back to the ceiling `default`, and every value is clamped to the ceiling `max`
 - mount only the per-job workspace plus required read-only assets
 - use read-only root filesystem where practical, with explicit tmpfs scratch (`/tmp`, `/run`, `/var/tmp`) mounted so build tooling that writes to `/tmp` still works
 

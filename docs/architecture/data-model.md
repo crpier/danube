@@ -40,6 +40,9 @@ CREATE TABLE pipelines (
     max_duration_seconds INTEGER DEFAULT 3600,
     workspace_size_gb INTEGER DEFAULT 5,
     egress INTEGER DEFAULT 0, -- job-level outbound network opt-in (0 = default-deny)
+    limit_cpu REAL,           -- requested CPU cores; NULL = use server ceiling default
+    limit_memory_mb INTEGER,  -- requested memory (MiB); NULL = use server ceiling default
+    limit_pids INTEGER,       -- requested max process count; NULL = use server ceiling default
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

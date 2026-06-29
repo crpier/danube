@@ -53,6 +53,7 @@ from snekql.sqlite import (
 from danube.db.models import Job, Pipeline
 from danube.domain.enums import JobStatus, TriggerType
 from danube.domain.lifecycle import ALLOWED_TRANSITIONS, TERMINAL_STATES, transition
+from danube.domain.limits import DEFAULT_CEILING, ResourceCeiling, ResourceRequest
 from danube.domain.runner_types import CoordinatorExit, JobHandle, StartJobRequest
 from danube.observability import Metrics, Tracer, job_log_fields
 from danube.runner.base import Runner
@@ -132,6 +133,7 @@ class JobOrchestrator:
         control_plane: ControlPlane,
         *,
         rpc_address: str,
+        limits: ResourceCeiling = DEFAULT_CEILING,
         metrics: Metrics | None = None,
         tracer: Tracer | None = None,
     ) -> None:
@@ -140,6 +142,10 @@ class JobOrchestrator:
         self._data_dir = Path(data_dir)
         self._control_plane = control_plane
         self._rpc_address = rpc_address
+        # Operator-set Resource Ceiling. The runner clamps the cgroup limits
+        # (CPU/memory/pids); the orchestrator clamps the wall-clock timeout it
+        # enforces below. Both read the same ceiling in production (#53).
+        self._limits = limits
         self._running: dict[str, _RunningJob] = {}
         self._metrics = metrics or Metrics()
         self._tracer = tracer or Tracer()
@@ -224,19 +230,7 @@ class JobOrchestrator:
         try:
             with self._tracer.span("runner start environment", job_id=job_id):
                 handle = await self._timed_runner_op(
-                    "start",
-                    self._runner.start_job(
-                        StartJobRequest(
-                            job_id=job_id,
-                            pipeline_id=job.pipeline_id,
-                            worker_image=pipeline.worker_image,
-                            max_duration_seconds=pipeline.max_duration_seconds,
-                            # Rows added before migration 0027 read `egress` back
-                            # as NULL; coerce that to default-deny (False) rather
-                            # than feed `None` into the non-optional `bool` field.
-                            egress=bool(pipeline.egress),
-                        )
-                    ),
+                    "start", self._runner.start_job(self._start_request(job, pipeline))
                 )
         except Exception as e:
             # No environment exists yet, so there is nothing to clean up here;
@@ -277,7 +271,7 @@ class JobOrchestrator:
             with anyio.CancelScope() as scope:
                 running.cancel_scope = scope
                 await self._advance(job_id, JobStatus.RUNNING)
-                with anyio.fail_after(pipeline.max_duration_seconds):
+                with anyio.fail_after(self._effective_timeout(pipeline)):
                     await self._runner.start_coordinator(handle, coordinator_env)
                     with self._tracer.span("wait for coordinator", job_id=job_id):
                         exit_info = await self._runner.wait_for_coordinator(handle)
@@ -299,7 +293,7 @@ class JobOrchestrator:
         except TimeoutError:
             final = JobStatus.TIMEOUT
             reason = (
-                f"job exceeded max_duration_seconds={pipeline.max_duration_seconds}"
+                f"job exceeded max_duration_seconds={self._effective_timeout(pipeline)}"
             )
             logger.warning(
                 "job_timed_out",
@@ -318,6 +312,41 @@ class JobOrchestrator:
             await self._cleanup(handle)
 
         return await self._finalize_unless_terminal(job_id, final, reason)
+
+    def _start_request(
+        self, job: Job[Fetched], pipeline: Pipeline[Fetched]
+    ) -> StartJobRequest:
+        """Build the runner request for ``job``, carrying the pipeline's posture.
+
+        `egress` is coerced to default-deny for pre-0027 rows that read back NULL;
+        `limits` carries the pipeline's requested cgroup limits (NULL columns left
+        as `None`), which the runner resolves against the Resource Ceiling. The
+        timeout is the ceiling-clamped wall-clock the orchestrator itself enforces.
+        """
+        return StartJobRequest(
+            job_id=job.id,
+            pipeline_id=job.pipeline_id,
+            worker_image=pipeline.worker_image,
+            max_duration_seconds=self._effective_timeout(pipeline),
+            egress=bool(pipeline.egress),
+            limits=ResourceRequest(
+                cpu=pipeline.limit_cpu,
+                memory_mb=pipeline.limit_memory_mb,
+                pids=pipeline.limit_pids,
+            ),
+        )
+
+    def _effective_timeout(self, pipeline: Pipeline[Fetched]) -> int:
+        """The pipeline's `max_duration_seconds` clamped to the Resource Ceiling.
+
+        Only ever differs from the requested `max_duration_seconds` when the
+        operator caps the timeout below it; a pipeline always carries a request, so
+        the ceiling default never applies here (#53).
+        """
+        resolved = self._limits.resolve(
+            ResourceRequest(timeout_seconds=pipeline.max_duration_seconds)
+        )
+        return resolved.timeout_seconds or pipeline.max_duration_seconds
 
     async def _timed_runner_op[T](self, operation: str, awaitable: Awaitable[T]) -> T:
         """Await a runner operation, recording its duration and success/error.

@@ -47,6 +47,7 @@ def _pipeline(
     triggers: list[dict[str, Any]] | None = None,
     permissions: list[dict[str, Any]] | None = None,
     egress: bool | None = None,
+    limits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     spec: dict[str, Any] = {
         "repository": f"https://example.test/{name}.git",
@@ -56,6 +57,8 @@ def _pipeline(
     }
     if egress is not None:
         spec["egress"] = egress
+    if limits is not None:
+        spec["limits"] = limits
     return {
         "apiVersion": API,
         "kind": "Pipeline",
@@ -133,6 +136,33 @@ def test_pipeline_egress_defaults_off_and_parses_when_set() -> None:
     by_name = {p.metadata.name: p for p in blueprint.pipelines}
     assert_eq(by_name["frontend"].spec.egress, False)
     assert_eq(by_name["deployer"].spec.egress, True)
+
+
+@test(mark="fast")
+def test_pipeline_limits_default_empty_and_parse_when_set() -> None:
+    with _checkout() as root:
+        _write_blueprint(
+            root,
+            teams=[_team("engineering", [])],
+            pipelines=[
+                _pipeline("frontend", "engineering"),
+                _pipeline(
+                    "builder",
+                    "engineering",
+                    limits={"cpu": 1.5, "memory_mb": 1024, "pids": 256},
+                ),
+            ],
+        )
+
+        blueprint = parse_blueprint(root)
+
+    by_name = {p.metadata.name: p for p in blueprint.pipelines}
+    assert_eq(by_name["frontend"].spec.limits.cpu, None)
+    assert_eq(by_name["frontend"].spec.limits.memory_mb, None)
+    assert_eq(by_name["frontend"].spec.limits.pids, None)
+    assert_eq(by_name["builder"].spec.limits.cpu, 1.5)
+    assert_eq(by_name["builder"].spec.limits.memory_mb, 1024)
+    assert_eq(by_name["builder"].spec.limits.pids, 256)
 
 
 @test(mark="fast")

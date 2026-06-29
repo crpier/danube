@@ -89,6 +89,15 @@ class Pipeline[S = Pending](sqlite.Model[S, "Pipeline[Fetched]"]):
     # `max_duration_seconds`/`workspace_size_gb` pattern: the non-optional `bool`
     # value type is pinned to the client default, which always fills new rows.
     egress: Pipeline.Col[bool] = sqlite.Integer(nullable=True, default=False)
+    # Pipeline-requested job resource limits (#53), each in canonical units: CPU in
+    # cores (REAL), memory in mebibytes, max process count. NULL means "unspecified"
+    # -- the runner falls back to the server Resource Ceiling default. ALTER-added
+    # nullable columns, so `default=None` (no client default fills them).
+    limit_cpu: Pipeline.Col[float | None] = sqlite.Real(nullable=True, default=None)
+    limit_memory_mb: Pipeline.Col[int | None] = sqlite.Integer(
+        nullable=True, default=None
+    )
+    limit_pids: Pipeline.Col[int | None] = sqlite.Integer(nullable=True, default=None)
     created_at: Pipeline.GenCol[datetime] = sqlite.Text(default=sqlite.CurrentTimestamp)
     updated_at: Pipeline.GenCol[datetime] = sqlite.Text(default=sqlite.CurrentTimestamp)
 

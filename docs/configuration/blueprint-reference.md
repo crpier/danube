@@ -163,6 +163,11 @@ python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt(
     "max_duration_seconds": 3600,
     "workspace_size_gb": 10,
     "egress": false,
+    "limits": {
+      "cpu": 2.0,
+      "memory_mb": 2048,
+      "pids": 512
+    },
     "worker": {
       "image": "node:20-alpine",
       "resources": {
@@ -189,6 +194,15 @@ the Blueprint so the grant is auditable under GitOps
 (`docs/adr/0002-default-deny-egress.md`). A filtered allowlist (the
 `networking.egress_allowlist` shown above) needs an egress proxy and is not yet
 implemented; today the field is binary deny/allow.
+
+`limits` requests the job's resource limits: `cpu` (CPU cores, fractions allowed),
+`memory_mb` (mebibytes), and `pids` (max process count). The job timeout is
+requested separately via `max_duration_seconds`. Every field is optional — an unset
+field falls back to the server Resource Ceiling's `default`. The runner clamps each
+requested value down to the ceiling's `max`, so a pipeline can never exceed the
+operator-configured cap (`[limits]` in `docs/configuration/server-config.md`). A
+request within the ceiling is honored as-is. The earlier `worker.resources` block is
+illustrative only and not yet implemented; use `limits` for enforced caps.
 
 Pipeline-level networking settings narrow or extend global policy according to the server's configured rules.
 

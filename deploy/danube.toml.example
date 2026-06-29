@@ -46,3 +46,18 @@ enabled = false
 # [webhooks]
 # github_secret = ""
 # gitlab_token = ""
+
+# Job Resource Ceiling. `default` fills any limit a pipeline does not request;
+# `max` is the hard cap every requested/default value is clamped to. Omit the
+# section to keep Danube's built-in conservative ceiling (2 CPUs, 2 GiB, 512 pids,
+# 1-hour timeout, uncapped max). Units: cpu = cores, memory_mb = MiB.
+# [limits.default]
+# cpu = 2.0
+# memory_mb = 2048
+# pids = 512
+# timeout_seconds = 3600
+# [limits.max]
+# cpu = 8.0
+# memory_mb = 16384
+# pids = 4096
+# timeout_seconds = 7200

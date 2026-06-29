@@ -110,6 +110,9 @@ class _DesiredPipeline:
     max_duration_seconds: int
     workspace_size_gb: int
     egress: bool
+    limit_cpu: float | None
+    limit_memory_mb: int | None
+    limit_pids: int | None
 
 
 async def apply_blueprint(db: Database, blueprint: Blueprint) -> BlueprintDiff:
@@ -222,6 +225,9 @@ def _desired_pipelines(blueprint: Blueprint) -> dict[str, _DesiredPipeline]:
             max_duration_seconds=pipeline.spec.max_duration_seconds,
             workspace_size_gb=pipeline.spec.workspace_size_gb,
             egress=pipeline.spec.egress,
+            limit_cpu=pipeline.spec.limits.cpu,
+            limit_memory_mb=pipeline.spec.limits.memory_mb,
+            limit_pids=pipeline.spec.limits.pids,
         )
     return desired
 
@@ -352,6 +358,9 @@ async def _upsert_pipelines(
                         max_duration_seconds=want.max_duration_seconds,
                         workspace_size_gb=want.workspace_size_gb,
                         egress=want.egress,
+                        limit_cpu=want.limit_cpu,
+                        limit_memory_mb=want.limit_memory_mb,
+                        limit_pids=want.limit_pids,
                     )
                 )
             )
@@ -368,6 +377,9 @@ async def _upsert_pipelines(
                 .set(Pipeline.max_duration_seconds.to(want.max_duration_seconds))
                 .set(Pipeline.workspace_size_gb.to(want.workspace_size_gb))
                 .set(Pipeline.egress.to(want.egress))
+                .set(Pipeline.limit_cpu.to(want.limit_cpu))
+                .set(Pipeline.limit_memory_mb.to(want.limit_memory_mb))
+                .set(Pipeline.limit_pids.to(want.limit_pids))
                 .set(Pipeline.updated_at.to(CurrentTimestamp))
                 .where(Pipeline.id.eq(pipeline_id))
             )
@@ -385,6 +397,9 @@ def _pipeline_differs(existing: Pipeline[Fetched], want: _DesiredPipeline) -> bo
         or existing.max_duration_seconds != want.max_duration_seconds
         or existing.workspace_size_gb != want.workspace_size_gb
         or existing.egress != want.egress
+        or existing.limit_cpu != want.limit_cpu
+        or existing.limit_memory_mb != want.limit_memory_mb
+        or existing.limit_pids != want.limit_pids
     )
 
 

@@ -39,6 +39,7 @@ from snekql.sqlite import Database, delete, insert, select
 from danube.db.models import Job, RunnerState
 from danube.domain.enums import JobStatus
 from danube.domain.lifecycle import ACTIVE_STATES
+from danube.domain.limits import DEFAULT_CEILING, ResourceCeiling, ResourceRequest
 from danube.domain.runner_types import (
     BuildImageRequest,
     BuildImageResult,
@@ -102,14 +103,43 @@ SCRATCH_TMPFS = (
     Tmpfs(destination="/var/tmp"),  # noqa: S108
 )
 
-# Default cgroup limits. Conservative caps that keep a runaway job from starving
-# the appliance; per-pipeline limits can override these later.
+# cgroup CPU accounting period (microseconds). A job's CPU-core allowance maps onto
+# a quota of `period * cores`; 100ms is libpod's default period.
+CPU_PERIOD_MICROSECONDS = 100_000
+
+# Default cgroup limits: the built-in Resource Ceiling's `default` converted to the
+# Podman shape. Conservative caps that keep a runaway job from starving the
+# appliance; a pipeline narrows them via its Blueprint `limits`, and an operator
+# raises the ceiling via the server `[limits]` table (#53).
 DEFAULT_LIMITS = ResourceLimits(
     cpu_quota=200_000,  # 2 CPUs at the default 100ms period
-    cpu_period=100_000,
+    cpu_period=CPU_PERIOD_MICROSECONDS,
     memory_bytes=2 * 1024**3,  # 2 GiB
     pids_limit=512,
 )
+
+
+def to_resource_limits(request: ResourceRequest) -> ResourceLimits:
+    """Convert resolved, canonical-unit job limits to the Podman cgroup shape.
+
+    Maps CPU cores onto a cgroup quota at the fixed accounting period and MiB onto
+    bytes; the wall-clock `timeout_seconds` is enforced by the orchestrator, not a
+    cgroup, so it is not represented here. An unset field stays `None` (no limit).
+    """
+    cpu_quota = (
+        round(CPU_PERIOD_MICROSECONDS * request.cpu)
+        if request.cpu is not None
+        else None
+    )
+    return ResourceLimits(
+        cpu_quota=cpu_quota,
+        cpu_period=CPU_PERIOD_MICROSECONDS if cpu_quota is not None else None,
+        memory_bytes=request.memory_mb * 1024**2
+        if request.memory_mb is not None
+        else None,
+        pids_limit=request.pids,
+    )
+
 
 # Internal Podman network the job pod attaches to by default: no route to the
 # internet, so egress is denied unless a pipeline opts in.
@@ -174,7 +204,10 @@ class LocalRunnerConfig:
     # egress (`docs/adr/0002-default-deny-egress.md`).
     egress_network: str = DEFAULT_EGRESS_NETWORK
     outbound_network: str = DEFAULT_OUTBOUND_NETWORK
-    limits: ResourceLimits = DEFAULT_LIMITS
+    # Operator-set Resource Ceiling. A job's requested `limits` are resolved against
+    # this (absent -> `default`, then clamped to `max`) before the cgroup limits are
+    # applied. The built-in ceiling reproduces the historical conservative caps.
+    limits: ResourceCeiling = DEFAULT_CEILING
     # How to launch the Coordinator pipeline, plus extra env and read-only mounts
     # the Coordinator container needs (e.g. the `danube` package and `PYTHONPATH`
     # for a stock-Python image that does not bundle the SDK). The Worker never
@@ -204,7 +237,7 @@ class LocalContainerRunner:
         self._coordinator_image = config.coordinator_image
         self._egress_network = config.egress_network
         self._outbound_network = config.outbound_network
-        self._limits = config.limits
+        self._ceiling = config.limits
         self._coordinator_command = config.coordinator_command
         self._coordinator_env = dict(config.coordinator_env)
         self._coordinator_mounts = tuple(config.coordinator_mounts)
@@ -240,11 +273,17 @@ class LocalContainerRunner:
             )
         )
 
+        # Resolve the pipeline's requested limits against the ceiling once per job
+        # (absent -> default, then clamped to max) and apply the same cgroup limits
+        # to both containers.
+        limits = to_resource_limits(self._ceiling.resolve(request.limits))
         worker_id = await self._podman.create_container(
-            self._container_spec(request, RESOURCE_WORKER, request.worker_image)
+            self._container_spec(request, RESOURCE_WORKER, request.worker_image, limits)
         )
         coordinator_id = await self._podman.create_container(
-            self._container_spec(request, RESOURCE_COORDINATOR, self._coordinator_image)
+            self._container_spec(
+                request, RESOURCE_COORDINATOR, self._coordinator_image, limits
+            )
         )
 
         await self._podman.start_pod(name)
@@ -482,7 +521,11 @@ class LocalContainerRunner:
         }
 
     def _container_spec(
-        self, request: StartJobRequest, resource: str, image: str
+        self,
+        request: StartJobRequest,
+        resource: str,
+        image: str,
+        limits: ResourceLimits,
     ) -> ContainerSpec:
         workspace = self._workspace_path(request.job_id)
         workspace_mount = Mount(
@@ -505,7 +548,7 @@ class LocalContainerRunner:
             read_only_rootfs=True,
             no_new_privileges=True,
             cap_drop=("ALL",),
-            limits=self._limits,
+            limits=limits,
         )
 
     def _container_name(self, job_id: str, resource: str) -> str:

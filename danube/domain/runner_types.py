@@ -10,6 +10,8 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from danube.domain.limits import ResourceRequest
+
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 
 
@@ -30,6 +32,11 @@ class StartJobRequest(_Frozen):
     # set, in which case it attaches a normal outbound network instead
     # (`docs/adr/0002-default-deny-egress.md`).
     egress: bool = False
+    # Pipeline-requested job resource limits (CPU/memory/pids/timeout). The runner
+    # resolves these against its operator-set Resource Ceiling -- absent fields fall
+    # back to the ceiling default, and every field is clamped to the ceiling max --
+    # before applying the cgroup limits (#53, `docs/configuration/server-config.md`).
+    limits: ResourceRequest = Field(default_factory=ResourceRequest)
 
 
 class JobHandle(_Frozen):

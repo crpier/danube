@@ -19,6 +19,7 @@ from danube.auth.config import (
     AUTH_ISSUER_ENV,
     AUTH_LEEWAY_SECONDS_ENV,
 )
+from danube.domain.limits import DEFAULT_CEILING
 from danube.master import (
     BIND_ADDRESS_ENV,
     DATA_DIR_ENV,
@@ -83,6 +84,34 @@ def test_load_config_defaults_without_file() -> None:
     assert_eq(str(config.data_dir), DEFAULT_DATA_DIR)
     assert_eq(config.log_level, "INFO")
     assert_eq(config.auth, None)
+    # No `[limits]` section: the built-in Resource Ceiling applies.
+    assert_eq(config.limits, DEFAULT_CEILING)
+
+
+@test(mark="fast")
+def test_load_config_parses_limits_section() -> None:
+    body = """
+[limits.default]
+cpu = 1.0
+memory_mb = 1024
+
+[limits.max]
+cpu = 8.0
+memory_mb = 16384
+pids = 4096
+timeout_seconds = 7200
+"""
+    with _clean_env(), _toml_file(body) as path:
+        config = load_config(path)
+
+    assert_eq(config.limits.default.cpu, 1.0)
+    assert_eq(config.limits.default.memory_mb, 1024)
+    # Unset default fields fall back to the built-in ceiling.
+    assert_eq(config.limits.default.pids, DEFAULT_CEILING.default.pids)
+    assert_eq(config.limits.max.cpu, 8.0)
+    assert_eq(config.limits.max.memory_mb, 16384)
+    assert_eq(config.limits.max.pids, 4096)
+    assert_eq(config.limits.max.timeout_seconds, 7200)
 
 
 @test(mark="fast")

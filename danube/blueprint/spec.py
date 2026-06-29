@@ -25,6 +25,20 @@ from pydantic import BaseModel, ConfigDict, Field
 from danube.domain.enums import PermissionLevel
 
 
+class PipelineLimits(BaseModel):
+    """Pipeline-requested job resource limits (#53).
+
+    CPU in cores, memory in mebibytes, and a max process count. Each is optional:
+    an unset field falls back to the server Resource Ceiling's default, and the
+    runner clamps every value to the ceiling max. The job timeout is requested
+    separately via `max_duration_seconds`. Negative or zero values are rejected.
+    """
+
+    cpu: float | None = Field(default=None, gt=0)
+    memory_mb: int | None = Field(default=None, gt=0)
+    pids: int | None = Field(default=None, gt=0)
+
+
 class _Document(BaseModel):
     """Common envelope: every Blueprint file carries these top-level keys."""
 
@@ -91,6 +105,9 @@ class PipelineSpec(BaseModel):
     # it to a normal outbound network instead. Never per-step
     # (`docs/adr/0002-default-deny-egress.md`).
     egress: bool = False
+    # Requested job resource limits, clamped to the server Resource Ceiling by the
+    # runner (#53). Absent fields fall back to the ceiling default.
+    limits: PipelineLimits = Field(default_factory=PipelineLimits)
     worker: WorkerSpec
     permissions: list[PermissionSpec] = Field(default_factory=list[PermissionSpec])
 
