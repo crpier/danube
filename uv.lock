@@ -181,7 +181,7 @@ wheels = [
 [[package]]
 name = "danube"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "croniter" },
     { name = "cryptography" },

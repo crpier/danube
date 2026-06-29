@@ -5,14 +5,40 @@ writes a starter `danube.toml`. It must be idempotent and must never silently
 overwrite an existing encryption key (that would orphan every stored secret).
 """
 
+import os
 import stat
 import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 from snektest import assert_eq, test
 
-from danube.cli import _run_init, build_parser, render_config_template
+from danube.cli import (
+    CONFIG_PATH_ENV,
+    DATA_DIR_ENV,
+    _run_init,
+    build_parser,
+    render_config_template,
+)
 from danube.security.crypto import KEY_SIZE
+
+
+@contextmanager
+def _clean_env() -> Generator[None]:
+    """Snapshot and restore the path-override env vars around a test body."""
+    names = (DATA_DIR_ENV, CONFIG_PATH_ENV)
+    saved = {name: os.environ.get(name) for name in names}
+    for name in names:
+        os.environ.pop(name, None)
+    try:
+        yield None
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _init_args(directory: Path, *, force: bool = False):  # noqa: ANN202 - argparse.Namespace
@@ -40,12 +66,37 @@ def test_render_config_template_includes_sections() -> None:
 
 @test(mark="fast")
 def test_parser_init_defaults() -> None:
-    parser = build_parser()
-    args = parser.parse_args(["init"])
+    with _clean_env():
+        parser = build_parser()
+        args = parser.parse_args(["init"])
     assert_eq(str(args.data_dir), "/var/lib/danube")
     assert_eq(str(args.config), "/etc/danube/danube.toml")
     assert_eq(args.force, False)
     assert args.handler is not None
+
+
+@test(mark="fast")
+def test_parser_init_honors_env_overrides() -> None:
+    with _clean_env():
+        os.environ[DATA_DIR_ENV] = ".danube"
+        os.environ[CONFIG_PATH_ENV] = ".danube/danube.toml"
+        parser = build_parser()
+        args = parser.parse_args(["init"])
+    assert_eq(str(args.data_dir), ".danube")
+    assert_eq(str(args.config), ".danube/danube.toml")
+
+
+@test(mark="fast")
+def test_parser_init_flags_override_env() -> None:
+    with _clean_env():
+        os.environ[DATA_DIR_ENV] = ".danube"
+        os.environ[CONFIG_PATH_ENV] = ".danube/danube.toml"
+        parser = build_parser()
+        args = parser.parse_args(
+            ["init", "--data-dir", "/srv/danube", "--config", "/srv/danube.toml"]
+        )
+    assert_eq(str(args.data_dir), "/srv/danube")
+    assert_eq(str(args.config), "/srv/danube.toml")
 
 
 @test(mark="medium")

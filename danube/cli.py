@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import os
 import sys
 from pathlib import Path
 
@@ -34,6 +35,35 @@ DEFAULT_DATA_DIR = "/var/lib/danube"
 DEFAULT_DATABASE_PATH = "danube.db"
 DEFAULT_KEY_PATH = "/var/lib/danube/keys/encryption.key"
 DEFAULT_CONFIG_PATH = "/etc/danube/danube.toml"
+
+# Env overrides for the default data dir and config path, mirroring the Master's
+# config-loading precedence (env wins over the hardcoded defaults). Lets a dev
+# keep every runtime file in one local dir without retyping flags, e.g.:
+#   export DANUBE_DATA_DIR=.danube DANUBE_CONFIG_PATH=.danube/danube.toml
+# `DATA_DIR_ENV` is shared with `danube.master` so both read the same variable.
+DATA_DIR_ENV = _master.DATA_DIR_ENV
+CONFIG_PATH_ENV = "DANUBE_CONFIG_PATH"
+
+
+def _default_data_dir() -> Path:
+    """The `init`/`reconcile` data-dir default: env override, else the builtin."""
+    return Path(os.environ.get(DATA_DIR_ENV) or DEFAULT_DATA_DIR)
+
+
+def _default_config_path() -> Path:
+    """The `init` config-path default: env override, else the builtin."""
+    return Path(os.environ.get(CONFIG_PATH_ENV) or DEFAULT_CONFIG_PATH)
+
+
+def _env_config_override() -> Path | None:
+    """The `master --config` default: the env path when set, else `None`.
+
+    Returning `None` keeps the existing behavior of running on built-in defaults
+    rather than reading a possibly-absent `/etc/danube/danube.toml`.
+    """
+    value = os.environ.get(CONFIG_PATH_ENV)
+    return Path(value) if value else None
+
 
 # Sub-directories created under the data dir by `danube init`.
 _DATA_SUBDIRS = ("keys", "logs", "artifacts", "workspaces")
@@ -191,14 +221,14 @@ def build_parser() -> argparse.ArgumentParser:
     _ = init.add_argument(
         "--data-dir",
         type=Path,
-        default=Path(DEFAULT_DATA_DIR),
-        help="Danube data directory to create and populate.",
+        default=_default_data_dir(),
+        help=f"Danube data directory to create and populate (env: {DATA_DIR_ENV}).",
     )
     _ = init.add_argument(
         "--config",
         type=Path,
-        default=Path(DEFAULT_CONFIG_PATH),
-        help="Path to write the starter danube.toml.",
+        default=_default_config_path(),
+        help=f"Path to write the starter danube.toml (env: {CONFIG_PATH_ENV}).",
     )
     _ = init.add_argument(
         "--force",
@@ -214,8 +244,11 @@ def build_parser() -> argparse.ArgumentParser:
     _ = master.add_argument(
         "--config",
         type=Path,
-        default=None,
-        help="Path to the Master configuration file (danube.toml).",
+        default=_env_config_override(),
+        help=(
+            "Path to the Master configuration file (danube.toml) "
+            f"(env: {CONFIG_PATH_ENV})."
+        ),
     )
     master.set_defaults(handler=_run_master)
 
@@ -241,8 +274,10 @@ def build_parser() -> argparse.ArgumentParser:
     _ = reconcile.add_argument(
         "--data-dir",
         type=Path,
-        default=Path(DEFAULT_DATA_DIR),
-        help="Danube data directory holding per-job workspaces.",
+        default=_default_data_dir(),
+        help=(
+            f"Danube data directory holding per-job workspaces (env: {DATA_DIR_ENV})."
+        ),
     )
     reconcile.set_defaults(handler=_run_reconcile)
 
