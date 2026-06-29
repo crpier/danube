@@ -466,10 +466,14 @@ async def test_start_job_mounts_writable_scratch_under_ro_rootfs() -> None:
         destinations = {t.destination for t in spec.tmpfs}
         assert_eq(destinations, {"/tmp", "/run", "/var/tmp"})
         # The wire body carries each scratch dir as a tmpfs mount alongside the
-        # workspace bind mount.
+        # workspace bind mount, with the production hardening options (`nosuid`,
+        # `nodev`; `noexec` deliberately omitted) reaching the body verbatim.
         body = _container_body(spec)
-        tmpfs_dests = {m["destination"] for m in body["mounts"] if m["type"] == "tmpfs"}
+        tmpfs_mounts = [m for m in body["mounts"] if m["type"] == "tmpfs"]
+        tmpfs_dests = {m["destination"] for m in tmpfs_mounts}
         assert_eq(tmpfs_dests, {"/tmp", "/run", "/var/tmp"})
+        for mount in tmpfs_mounts:
+            assert_eq(mount["options"], ["rw", "nosuid", "nodev"])
 
 
 @test(mark="fast")
