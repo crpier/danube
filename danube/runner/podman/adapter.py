@@ -84,6 +84,20 @@ class Mount:
 
 
 @dataclass(frozen=True, slots=True)
+class Tmpfs:
+    """An in-memory tmpfs mount: writable scratch space backed by no host path.
+
+    Used to carve writable directories (e.g. `/tmp`) out of an otherwise
+    read-only rootfs. `options` are passed through verbatim as mount options;
+    the defaults keep the scratch usable by real build tooling while denying
+    setuid bits and device nodes. `noexec` is deliberately absent: build steps
+    routinely write and execute scripts under `/tmp`."""
+
+    destination: str
+    options: Sequence[str] = ("rw", "nosuid", "nodev")
+
+
+@dataclass(frozen=True, slots=True)
 class ResourceLimits:
     """cgroup limits applied to a container. `None` leaves a limit unset."""
 
@@ -104,6 +118,9 @@ class ContainerSpec:
     command: Sequence[str] | None = None
     env: Mapping[str, str] = field(default_factory=dict[str, str])
     mounts: Sequence[Mount] = ()
+    # tmpfs scratch mounts, layered on top of the bind mounts. Required for a
+    # read-only rootfs to stay usable (writable `/tmp`, `/run`, `/var/tmp`).
+    tmpfs: Sequence[Tmpfs] = ()
     work_dir: str | None = None
     user: str | None = None
     privileged: bool = False
@@ -765,16 +782,28 @@ def _container_body(spec: ContainerSpec) -> dict[str, Any]:
     # here.
     body["pidns"] = {"nsmode": "host" if spec.host_pid else "private"}
     body["ipcns"] = {"nsmode": "host" if spec.host_ipc else "private"}
-    if spec.mounts:
-        body["mounts"] = [
-            {
-                "type": "bind",
-                "source": mount.source,
-                "destination": mount.destination,
-                "options": ["ro" if mount.read_only else "rw"],
-            }
-            for mount in spec.mounts
-        ]
+    mounts: list[dict[str, Any]] = [
+        {
+            "type": "bind",
+            "source": mount.source,
+            "destination": mount.destination,
+            "options": ["ro" if mount.read_only else "rw"],
+        }
+        for mount in spec.mounts
+    ]
+    # tmpfs scratch mounts are OCI mounts of type "tmpfs" with no host source,
+    # specified explicitly rather than left to libpod's read-only defaults.
+    mounts.extend(
+        {
+            "type": "tmpfs",
+            "source": "tmpfs",
+            "destination": tmpfs.destination,
+            "options": list(tmpfs.options),
+        }
+        for tmpfs in spec.tmpfs
+    )
+    if mounts:
+        body["mounts"] = mounts
     resource_limits = _resource_limits(spec.limits)
     if resource_limits:
         body["resource_limits"] = resource_limits

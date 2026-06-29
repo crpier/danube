@@ -41,7 +41,7 @@ Job containers should be created with secure defaults:
 - non-root user where image supports it
 - dropped capabilities by default
 - read-only root filesystem where practical
-- writable per-job `/workspace` only
+- writable per-job `/workspace` only, plus explicit tmpfs scratch (`/tmp`, `/run`, `/var/tmp`) so build tooling that writes to `/tmp` still works
 - explicit CPU, memory, and pids limits
 - automatic cleanup after completion or failure
 
