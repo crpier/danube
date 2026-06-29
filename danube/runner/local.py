@@ -11,7 +11,8 @@ Security defaults follow `docs/architecture/local-runner.md` and `security.md`:
 rootless (the adapter targets the rootless socket), never privileged, no host
 network/PID/IPC namespaces, all capabilities dropped, `no-new-privileges`, CPU/
 memory/pids limits, only the per-job workspace mounted, and a read-only root
-filesystem. Egress is denied by default by attaching the pod to an `internal`
+filesystem with writable tmpfs scratch (`/tmp`, `/run`, `/var/tmp`) so real build
+tooling still works. Egress is denied by default by attaching the pod to an `internal`
 Podman network (`docs/architecture/networking.md`); allowlisted egress through a
 proxy is handled separately.
 
@@ -60,6 +61,7 @@ from danube.runner.podman import (
     PushSpec,
     RegistryAuth,
     ResourceLimits,
+    Tmpfs,
 )
 
 logger = logging.getLogger("danube.runner.local")
@@ -84,6 +86,19 @@ STATE_RUNNING = "running"
 STATE_CLEANUP_FAILED = "cleanup_failed"
 
 WORKSPACE_MOUNT = "/workspace"
+
+# Writable scratch carved out of the read-only rootfs. Real build tooling writes
+# to `/tmp` (and expects `/run`, `/var/tmp` to be writable too); without these
+# explicit tmpfs mounts a read-only rootfs would break those steps. Mounted
+# explicitly rather than relying on libpod's read-only-rootfs defaults so the
+# behaviour is the runner's, not the Podman version's (GitHub issue #51).
+# S108 noqa below: these are in-container tmpfs mount destinations, not host
+# temp files.
+SCRATCH_TMPFS = (
+    Tmpfs(destination="/tmp"),  # noqa: S108
+    Tmpfs(destination="/run"),
+    Tmpfs(destination="/var/tmp"),  # noqa: S108
+)
 
 # Default cgroup limits. Conservative caps that keep a runaway job from starving
 # the appliance; per-pipeline limits can override these later.
@@ -467,6 +482,7 @@ class LocalContainerRunner:
             command=KEEP_ALIVE_COMMAND,
             env=request.env,
             mounts=(workspace_mount, *extra),
+            tmpfs=SCRATCH_TMPFS,
             work_dir=WORKSPACE_MOUNT,
             privileged=False,
             read_only_rootfs=True,

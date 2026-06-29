@@ -71,6 +71,7 @@ ignore = [
   "PLR2004", # Allow magic numbers.
   "RUF029",  # Allow async functions without async features.
   "S101",    # Allow use of assert.
+  "S108",    # Allow hardcoded /tmp-like paths: tests reference in-container tmpfs mount destinations, not host temp files.
   "S105",    # Allow hardcoded password strings.
   "S106",    # Allow hardcoded password strings.
   "S107",    # Allow hardcoded password strings.

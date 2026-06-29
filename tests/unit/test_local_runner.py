@@ -37,6 +37,7 @@ from danube.runner.local import (
     LABEL_RESOURCE,
     RESOURCE_COORDINATOR,
     RESOURCE_WORKER,
+    SCRATCH_TMPFS,
     CoordinatorNotStartedError,
     LocalContainerRunner,
     LocalRunnerConfig,
@@ -445,6 +446,30 @@ async def test_start_job_container_body_carries_isolation_profile() -> None:
     pod_spec = _by_method(podman.calls, "create_pod").payload["spec"]
     assert isinstance(pod_spec, PodSpec)
     assert_eq(tuple(pod_spec.networks), (DEFAULT_EGRESS_NETWORK,))
+
+
+@test(mark="fast")
+async def test_start_job_mounts_writable_scratch_under_ro_rootfs() -> None:
+    # Both containers run with a read-only rootfs, so each must get the writable
+    # tmpfs scratch (`/tmp`, `/run`, `/var/tmp`) real build tooling depends on.
+    podman = FakePodman()
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()))
+
+    _ = await runner.start_job(START)
+
+    container_calls = [c for c in podman.calls if c.method == "create_container"]
+    assert_eq(len(container_calls), 2)
+    for call in container_calls:
+        spec = _spec(call)
+        assert spec.read_only_rootfs is True
+        assert_eq(tuple(spec.tmpfs), SCRATCH_TMPFS)
+        destinations = {t.destination for t in spec.tmpfs}
+        assert_eq(destinations, {"/tmp", "/run", "/var/tmp"})
+        # The wire body carries each scratch dir as a tmpfs mount alongside the
+        # workspace bind mount.
+        body = _container_body(spec)
+        tmpfs_dests = {m["destination"] for m in body["mounts"] if m["type"] == "tmpfs"}
+        assert_eq(tmpfs_dests, {"/tmp", "/run", "/var/tmp"})
 
 
 @test(mark="fast")

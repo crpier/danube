@@ -4,8 +4,8 @@ A companion unit test asserts the runner *requests* the profile in the libpod bo
 This is the other half: it boots a real job pod with `LocalContainerRunner`'s
 production defaults and execs into the Worker to prove the kernel actually
 *enforces* the profile — a read-only rootfs rejects writes outside `/workspace`,
-all Linux capabilities are dropped, and the default-deny `internal` network blocks
-egress.
+the explicit tmpfs scratch (`/tmp`, `/run`, `/var/tmp`) stays writable, all Linux
+capabilities are dropped, and the default-deny `internal` network blocks egress.
 
 It registers only when a Podman socket is present, so it skips on hosts without
 rootless Podman.
@@ -71,6 +71,18 @@ if socket_available():
                 handle, ExecStepRequest(command="touch ./scratch && rm ./scratch")
             )
             assert_eq(inside.exit_code, 0)
+
+            # Writable scratch under the read-only rootfs: real build tooling
+            # writes to /tmp, so the explicit tmpfs mounts must let it through
+            # even though `/` itself is read-only (the check above proved that).
+            for scratch in ("/tmp", "/run", "/var/tmp"):
+                wrote = await runner.exec_step(
+                    handle,
+                    ExecStepRequest(
+                        command=f"touch {scratch}/danube-scratch && rm {scratch}/danube-scratch"
+                    ),
+                )
+                assert_eq(wrote.exit_code, 0)
 
             # All Linux capabilities dropped: the effective capability set is empty.
             caps = await runner.exec_step(

@@ -151,7 +151,7 @@ The runner should request secure Podman settings by default:
 - drop unnecessary capabilities
 - set CPU, memory, and pids limits
 - mount only the per-job workspace plus required read-only assets
-- use read-only root filesystem where practical
+- use read-only root filesystem where practical, with explicit tmpfs scratch (`/tmp`, `/run`, `/var/tmp`) mounted so build tooling that writes to `/tmp` still works
 
 ## Networking
 

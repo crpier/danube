@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 from snektest import assert_eq, test
 
-from danube.runner.podman import Mount, ResourceLimits
+from danube.runner.podman import Mount, ResourceLimits, Tmpfs
 from danube.runner.podman.adapter import (
     BuildSpec,
     ContainerSpec,
@@ -113,6 +113,76 @@ def test_container_body_encodes_security_defaults() -> None:
             "memory": {"limit": 2048},
             "pids": {"limit": 64},
         },
+    )
+
+
+@test(mark="fast")
+def test_container_body_encodes_tmpfs_scratch() -> None:
+    # A read-only rootfs needs explicit tmpfs scratch mounts; the body must carry
+    # them as OCI mounts of type "tmpfs", layered after the bind mounts.
+    spec = ContainerSpec(
+        name="danube-job-j1-worker",
+        image="busybox:latest",
+        pod="danube-job-j1",
+        labels={"io.danube.managed": "true"},
+        mounts=(Mount(source="/data/ws/j1", destination="/workspace"),),
+        tmpfs=(
+            Tmpfs(destination="/tmp"),
+            Tmpfs(destination="/run", options=("rw", "noexec")),
+        ),
+        read_only_rootfs=True,
+    )
+
+    body = _container_body(spec)
+
+    assert_eq(
+        body["mounts"],
+        [
+            {
+                "type": "bind",
+                "source": "/data/ws/j1",
+                "destination": "/workspace",
+                "options": ["rw"],
+            },
+            {
+                "type": "tmpfs",
+                "source": "tmpfs",
+                "destination": "/tmp",
+                "options": ["rw", "nosuid", "nodev"],
+            },
+            {
+                "type": "tmpfs",
+                "source": "tmpfs",
+                "destination": "/run",
+                "options": ["rw", "noexec"],
+            },
+        ],
+    )
+
+
+@test(mark="fast")
+def test_container_body_tmpfs_only_without_bind_mounts() -> None:
+    # tmpfs scratch reaches the body even when there are no bind mounts.
+    spec = ContainerSpec(
+        name="danube-job-j1-worker",
+        image="busybox:latest",
+        pod="danube-job-j1",
+        labels={"io.danube.managed": "true"},
+        tmpfs=(Tmpfs(destination="/tmp"),),
+    )
+
+    body = _container_body(spec)
+
+    assert_eq(
+        body["mounts"],
+        [
+            {
+                "type": "tmpfs",
+                "source": "tmpfs",
+                "destination": "/tmp",
+                "options": ["rw", "nosuid", "nodev"],
+            }
+        ],
     )
 
 
