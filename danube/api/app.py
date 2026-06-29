@@ -12,6 +12,8 @@ is injected the same way the database is. Webhooks, write endpoints, metrics, an
 SPA serving live in later issues.
 """
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from snekql.sqlite import Database
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -37,6 +39,7 @@ from danube.api.routes import (
 from danube.api.routes import (
     metrics as metrics_route,
 )
+from danube.api.spa import mount_spa
 from danube.auth import AuthConfig
 from danube.observability import Metrics, Tracer
 from danube.orchestrator import JobManager
@@ -111,6 +114,7 @@ def create_app(  # noqa: PLR0913, C901 - factory wiring each optional subsystem 
     runner: Runner | None = None,
     metrics_enabled: bool = True,
     auth: AuthConfig | None = None,
+    spa_dir: Path | None = None,
 ) -> FastAPI:
     """Build the FastAPI app, injecting `db` as the request-scoped database.
 
@@ -127,6 +131,11 @@ def create_app(  # noqa: PLR0913, C901 - factory wiring each optional subsystem 
     Passing `auth` turns on OIDC/JWT authentication and team-based RBAC for the
     UI/API routes (read and control); without it the API is unauthenticated.
     Health and metrics endpoints are never gated by auth.
+
+    Passing `spa_dir` serves the built frontend SPA from that directory at `/`
+    (with client-side-route fallback to its `index.html`); it is mounted after
+    every API router so the JSON routes are never shadowed. When the directory
+    holds no build the SPA mount is a no-op and `/` stays unmounted.
     """
     app = FastAPI(title="Danube Master API", version=__version__)
 
@@ -172,4 +181,8 @@ def create_app(  # noqa: PLR0913, C901 - factory wiring each optional subsystem 
 
             app.dependency_overrides[get_webhook_config] = provide_webhook_config
             app.include_router(webhooks.router)
+
+    # Mount the SPA catch-all last so every API/RPC/webhook route is matched first.
+    if spa_dir is not None:
+        mount_spa(app, spa_dir)
     return app
