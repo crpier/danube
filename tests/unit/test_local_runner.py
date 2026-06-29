@@ -402,9 +402,10 @@ async def test_start_job_applies_security_defaults() -> None:
 
 @test(mark="fast")
 async def test_start_job_container_body_carries_isolation_profile() -> None:
-    # The unit half of issue #50: a job's container specs, once translated to the
-    # libpod SpecGenerator body the adapter sends, carry the full Isolation Profile
-    # with the runner's *resolved* default limits (not just "some limit is set").
+    # The unit half of the isolation verification: a job's container specs, once
+    # translated to the libpod SpecGenerator body the adapter sends, carry the full
+    # Isolation Profile with the runner's *resolved* default limits (not just "some
+    # limit is set").
     podman = FakePodman()
     data = load_fixture(data_dir())
     runner = LocalContainerRunner(podman, data)

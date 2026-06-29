@@ -1,21 +1,19 @@
-"""Behavioral verification of the Isolation Profile on real rootless Podman (#50).
+"""Behavioral verification of the Isolation Profile on real rootless Podman.
 
-The unit half (`tests/unit/test_local_runner.py`,
-`test_start_job_container_body_carries_isolation_profile`) asserts the runner
-*requests* the profile in the libpod body. This is the other half: it boots a real
-job pod with `LocalContainerRunner`'s production defaults and execs into the Worker
-to prove the kernel actually *enforces* the profile — a read-only rootfs rejects
-writes outside `/workspace`, all Linux capabilities are dropped, and the
-default-deny `internal` network blocks egress.
+A companion unit test asserts the runner *requests* the profile in the libpod body.
+This is the other half: it boots a real job pod with `LocalContainerRunner`'s
+production defaults and execs into the Worker to prove the kernel actually
+*enforces* the profile — a read-only rootfs rejects writes outside `/workspace`,
+all Linux capabilities are dropped, and the default-deny `internal` network blocks
+egress.
 
 It registers only when a Podman socket is present, so it skips on hosts without
-rootless Podman (the validation gate accepts that). This is also the seed of the
-shared real-Podman test harness referenced by the wider verification theme.
+rootless Podman.
 
-NOTE: this environment has no Podman socket, so this test is UNVERIFIED here. It is
-written to the spec above and may need adjustment on a real rootless-Podman host
-(notably the BusyBox applet behaviour for `wget`/`grep` and the exact failure mode
-of an outbound connection on an `internal` network).
+NOTE: a host without a reachable Podman socket leaves this test UNVERIFIED; it may
+need adjustment on a real rootless-Podman host (notably the BusyBox applet
+behaviour for `wget`/`grep` and the exact failure mode of an outbound connection on
+an `internal` network).
 """
 
 import shutil
@@ -84,12 +82,17 @@ if socket_available():
             )
 
             # Egress denied: the pod is on an `internal` network with no route to
-            # the internet, so an outbound connection cannot be established.
+            # the internet, so an outbound connection cannot be established. Target a
+            # literal IP so a failure cannot be a DNS lookup instead of a blocked
+            # connection, and exclude exit 127 so a missing `wget` applet fails the
+            # test rather than masquerading as denied egress.
             egress = await runner.exec_step(
                 handle,
                 ExecStepRequest(command="wget -T 5 -q -O - http://1.1.1.1/"),
             )
-            assert egress.exit_code != 0, "internal network must deny egress"
+            assert egress.exit_code not in (0, 127), (
+                f"internal network must deny egress; got exit {egress.exit_code}"
+            )
         finally:
             await runner.cleanup_job(handle)
             shutil.rmtree(data_dir, ignore_errors=True)
