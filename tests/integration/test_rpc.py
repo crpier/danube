@@ -23,11 +23,16 @@ from snektest import assert_eq, assert_raises, fixture, load_fixture, test
 from danube.api import create_app
 from danube.db import open_database
 from danube.db.models import Artifact, Job, Pipeline, Secret, Step, Team
-from danube.domain.enums import JobStatus, StepStatus, TriggerType
-from danube.domain.runner_types import ExecResult, StartJobRequest
+from danube.domain.enums import JobStatus, StepKind, StepStatus, TriggerType
+from danube.domain.runner_types import (
+    BuildImageRequest,
+    BuildImageResult,
+    ExecResult,
+    StartJobRequest,
+)
 from danube.rpc import ControlPlane
 from danube.runner import FakeRunner
-from danube.sdk import DanubeClient, RpcError, StepError
+from danube.sdk import BuildError, DanubeClient, RpcError, StepError
 from danube.security import SecretCipher, SecretService, generate_key
 from examples.danubefile import pipeline
 
@@ -457,6 +462,92 @@ async def test_download_unknown_artifact_is_404() -> None:
     response = await h.http.get(f"/api/v1/artifacts/{JOB_ID}/nope")
 
     assert_eq(response.status_code, 404)
+
+
+def _seed_build_context(workspace: Path) -> None:
+    """Drop a trivial Dockerfile at the workspace root for an Image Build."""
+    (workspace / "Dockerfile").write_text("FROM scratch\nCOPY Dockerfile /Dockerfile\n")
+
+
+@test(mark="medium")
+async def test_build_image_records_build_step_and_returns_digest() -> None:
+    h = await load_fixture(harness())
+    _seed_build_context(h.data_dir / "workspaces" / JOB_ID)
+    h.runner.script_build(
+        "app:abc",
+        BuildImageResult(
+            success=True,
+            image_id="sha256:deadbeef",
+            output="STEP 1/1: FROM scratch\nSuccessfully tagged app:abc\n",
+            tag="app:abc",
+        ),
+    )
+
+    built = await h.danube().images.build("app:abc")
+
+    # The SDK returns the tag and the image digest from the Local Image Store.
+    assert_eq(built.tag, "app:abc")
+    assert_eq(built.digest, "sha256:deadbeef")
+    # A kind=build step is recorded with success.
+    steps = await _steps(h.db)
+    assert_eq([s.name for s in steps], ["build-1"])
+    assert_eq(steps[0].kind, StepKind.BUILD)
+    assert_eq(steps[0].status, StepStatus.SUCCESS)
+    assert_eq(steps[0].exit_code, 0)
+    # The build output is streamed to the job log.
+    logged = await anyio.Path(h.log_path()).read_text()
+    assert "STEP 1/1: FROM scratch" in logged
+    # The runner was handed the workspace-resolved absolute context path.
+    build_call = next(c for c in h.runner.calls if c.method == "build_image")
+    request = build_call.args[1]
+    assert isinstance(request, BuildImageRequest)
+    assert str(h.data_dir / "workspaces" / JOB_ID) in request.context_path
+
+
+@test(mark="medium")
+async def test_build_image_failure_marks_step_and_raises() -> None:
+    h = await load_fixture(harness())
+    _seed_build_context(h.data_dir / "workspaces" / JOB_ID)
+    h.runner.script_build(
+        "app:abc",
+        BuildImageResult(
+            success=False,
+            image_id="",
+            output="error building: RUN failed\n",
+            tag="app:abc",
+        ),
+    )
+
+    with assert_raises(BuildError):
+        await h.danube().images.build("app:abc")
+
+    steps = await _steps(h.db)
+    assert_eq(steps[0].kind, StepKind.BUILD)
+    assert_eq(steps[0].status, StepStatus.FAILURE)
+    assert_eq(steps[0].exit_code, 1)
+
+
+@test(mark="medium")
+async def test_build_image_missing_context_is_rejected() -> None:
+    h = await load_fixture(harness())
+
+    with assert_raises(RpcError) as caught:
+        await h.danube().images.build("app:abc", context="nope")
+
+    assert_eq(caught.exception.status_code, 400)
+    # No step is recorded when the context is invalid.
+    assert_eq(await _steps(h.db), [])
+
+
+@test(mark="medium")
+async def test_build_image_with_invalid_token_is_rejected() -> None:
+    h = await load_fixture(harness())
+    _seed_build_context(h.data_dir / "workspaces" / JOB_ID)
+
+    with assert_raises(RpcError) as caught:
+        await h.danube(token="wrong").images.build("app:abc")
+
+    assert_eq(caught.exception.status_code, 401)
 
 
 @test(mark="medium")

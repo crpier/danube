@@ -20,7 +20,12 @@ from pathlib import Path
 import httpx
 from snektest import assert_eq, fixture, load_fixture, test
 
-from danube.domain.runner_types import ExecStepRequest, StartJobRequest
+from danube.domain.runner_types import (
+    BuildImageRequest,
+    ExecStepRequest,
+    JobHandle,
+    StartJobRequest,
+)
 from danube.runner.local import LABEL_JOB_ID, LocalContainerRunner, LocalRunnerConfig
 from danube.runner.podman import PodmanAdapter, build_async_client, socket_available
 
@@ -114,6 +119,31 @@ if socket_available():
         containers = await adapter.list_containers({LABEL_JOB_ID: job_id})
         assert_eq(containers, [])
         assert not _exists(data / "workspaces" / job_id)
+
+    @test(mark="slow")
+    async def test_build_image_produces_tagged_image_in_store() -> None:
+        client = await load_fixture(podman_client())
+        data = load_fixture(data_dir())
+        runner = _make_runner(client, data)
+        adapter = PodmanAdapter(client)
+        context = data / "ctx"
+        context.mkdir(parents=True)
+        # A trivial build with no RUN instructions, so it succeeds even with the
+        # default network=none and without pulling any base image.
+        (context / "Dockerfile").write_text(
+            "FROM scratch\nCOPY Dockerfile /Dockerfile\n"
+        )
+        tag = f"localhost/danube-it-{uuid.uuid4().hex[:12]}:latest"
+        handle = JobHandle(job_id="build-it", pod_id="none", workspace_path=str(data))
+
+        result = await runner.build_image(
+            handle, BuildImageRequest(tag=tag, context_path=str(context))
+        )
+
+        assert result.success is True, result.output
+        assert result.image_id != ""
+        # The image is now in the host Local Image Store.
+        assert await adapter.image_exists(tag)
 
     @test(mark="slow")
     async def test_health_reports_healthy_against_live_socket() -> None:

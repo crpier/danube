@@ -128,4 +128,33 @@ MIGRATIONS: dict[str, str] = {
     "0021_index_idx_runner_state_job_id": (
         'CREATE INDEX "idx_runner_state_job_id" ON "runner_state" ("job_id")'
     ),
+    # Step Kind discriminator for Image Building (#47). Adding a NOT NULL column
+    # via ALTER requires a *server* DEFAULT, but the model declares only a client
+    # default (snekql v1 server defaults are CurrentTimestamp-only), and strict
+    # verify rejects the mismatch. So rebuild `steps` the standard SQLite way:
+    # create the table with the new `kind TEXT NOT NULL` (no server default),
+    # copy the rows (backfilling 'run'), drop the old table, rename, reindex.
+    # Nothing references `steps`, so the drop/rename is safe.
+    "0022_create_steps_with_kind": (
+        'CREATE TABLE "steps_new" ("id" TEXT PRIMARY KEY, "job_id" TEXT NOT NULL, '
+        '"name" TEXT NOT NULL, "sequence" INTEGER NOT NULL, "command" TEXT NOT NULL, '
+        '"kind" TEXT NOT NULL, "status" TEXT NOT NULL, "exit_code" INTEGER, '
+        '"started_at" TEXT, "finished_at" TEXT, "log_offset_start" INTEGER, '
+        '"log_offset_end" INTEGER, '
+        'FOREIGN KEY ("job_id") REFERENCES "jobs" ("id") ON DELETE CASCADE) STRICT'
+    ),
+    "0023_copy_steps_into_kind_table": (
+        'INSERT INTO "steps_new" '
+        '("id", "job_id", "name", "sequence", "command", "kind", "status", '
+        '"exit_code", "started_at", "finished_at", "log_offset_start", '
+        '"log_offset_end") '
+        'SELECT "id", "job_id", "name", "sequence", "command", \'run\', "status", '
+        '"exit_code", "started_at", "finished_at", "log_offset_start", '
+        '"log_offset_end" FROM "steps"'
+    ),
+    "0024_drop_old_steps": 'DROP TABLE "steps"',
+    "0025_rename_steps_table": 'ALTER TABLE "steps_new" RENAME TO "steps"',
+    "0026_index_idx_steps_job_id": (
+        'CREATE INDEX "idx_steps_job_id" ON "steps" ("job_id")'
+    ),
 }

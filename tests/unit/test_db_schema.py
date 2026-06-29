@@ -68,5 +68,47 @@ async def test_pipeline_job_step_round_trip() -> None:
         assert_eq(job.status, "pending")  # client default applied at construction
         assert_eq(step.name, "compile")
         assert_eq(step.sequence, 1)
+        assert_eq(step.kind, "run")  # client default applied at construction
+    finally:
+        await db.close()
+
+
+@test(mark="fast")
+async def test_step_kind_build_round_trips() -> None:
+    db = await open_database(":memory:")
+    try:
+        async with db.transaction() as tx:
+            await tx.execute(insert(Team(id="team-2", name="ci", global_admin=True)))
+            await tx.execute(
+                insert(
+                    Pipeline(
+                        id="pipe-2",
+                        name="image",
+                        team_id="team-2",
+                        repo_url="https://example.test/repo.git",
+                        worker_image="docker.io/library/python:3.14",
+                    )
+                )
+            )
+            await tx.execute(
+                insert(Job(id="job-2", pipeline_id="pipe-2", trigger_type="manual"))
+            )
+            await tx.execute(
+                insert(
+                    Step(
+                        id="step-2",
+                        job_id="job-2",
+                        name="build-image",
+                        sequence=1,
+                        command="build app:abc",
+                        kind="build",
+                    )
+                )
+            )
+
+        async with db.transaction() as tx:
+            step = await tx.fetch_one(select(Step).where(Step.id.eq("step-2")))
+
+        assert_eq(step.kind, "build")
     finally:
         await db.close()

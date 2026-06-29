@@ -6,6 +6,8 @@ Danube spec/result dataclasses defined here, never on Podman wire formats.
 
 from danube.runner.podman.adapter import (
     DEFAULT_API_VERSION,
+    BuildResult,
+    BuildSpec,
     ContainerSpec,
     ExecInspect,
     ExecOutput,
@@ -21,11 +23,15 @@ from danube.runner.podman.adapter import (
     build_async_client,
     default_socket_path,
     demultiplex_stream,
+    parse_build_stream,
     socket_available,
+    tar_build_context,
 )
 
 __all__ = [
     "DEFAULT_API_VERSION",
+    "BuildResult",
+    "BuildSpec",
     "ContainerSpec",
     "ExecInspect",
     "ExecOutput",
@@ -41,5 +47,7 @@ __all__ = [
     "build_async_client",
     "default_socket_path",
     "demultiplex_stream",
+    "parse_build_stream",
     "socket_available",
+    "tar_build_context",
 ]

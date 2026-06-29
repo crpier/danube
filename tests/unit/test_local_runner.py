@@ -19,7 +19,12 @@ from snektest import assert_eq, assert_raises, fixture, load_fixture, test
 from danube.db import open_database
 from danube.db.models import Job, Pipeline, RunnerState, Team
 from danube.domain.enums import JobStatus, TriggerType
-from danube.domain.runner_types import ExecStepRequest, JobHandle, StartJobRequest
+from danube.domain.runner_types import (
+    BuildImageRequest,
+    ExecStepRequest,
+    JobHandle,
+    StartJobRequest,
+)
 from danube.runner.base import Runner
 from danube.runner.local import (
     LABEL_JOB_ID,
@@ -35,6 +40,8 @@ from danube.runner.local import (
     pod_name,
 )
 from danube.runner.podman import (
+    BuildResult,
+    BuildSpec,
     ContainerSpec,
     ExecInspect,
     ExecOutput,
@@ -66,6 +73,9 @@ class FakePodman:
         self.existing_images: set[str] = set()
         self.exec_output = ExecOutput(stdout="", stderr="")
         self.exec_result = ExecInspect(exit_code=0, running=False)
+        self.build_result = BuildResult(
+            success=True, image_id="sha256:built", output="step 1/1\n"
+        )
         self.pods: list[ResourceSummary] = []
         self.containers: list[ResourceSummary] = []
         self.remove_pod_error: PodmanError | None = None
@@ -142,6 +152,10 @@ class FakePodman:
     async def exec_inspect(self, exec_id: str) -> ExecInspect:
         self._record("exec_inspect", exec_id=exec_id)
         return self.exec_result
+
+    async def build_image(self, spec: BuildSpec) -> BuildResult:
+        self._record("build_image", spec=spec)
+        return self.build_result
 
 
 # Assignable only if FakePodman structurally satisfies PodmanAPI, so the gate
@@ -419,6 +433,53 @@ async def test_exec_step_propagates_nonzero_exit_code() -> None:
 
     assert_eq(result.exit_code, 2)
     assert_eq(result.stderr, "boom")
+
+
+@test(mark="fast")
+async def test_build_image_drives_host_podman_build() -> None:
+    podman = FakePodman()
+    podman.build_result = BuildResult(
+        success=True, image_id="sha256:built", output="STEP 1/1\n"
+    )
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()))
+
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+    result = await runner.build_image(
+        handle,
+        BuildImageRequest(
+            tag="app:abc", context_path="/ws/build", dockerfile="Dockerfile"
+        ),
+    )
+
+    assert result.success is True
+    assert_eq(result.image_id, "sha256:built")
+    assert_eq(result.tag, "app:abc")
+    assert_eq(result.output, "STEP 1/1\n")
+    # The build runs on host Podman (no pod/exec), with network disabled for RUN.
+    assert_eq(podman.methods, ["build_image"])
+    spec = _by_method(podman.calls, "build_image").payload["spec"]
+    assert isinstance(spec, BuildSpec)
+    assert_eq(spec.context_path, "/ws/build")
+    assert_eq(spec.tag, "app:abc")
+    assert_eq(spec.dockerfile, "Dockerfile")
+    assert_eq(spec.network, "none")
+
+
+@test(mark="fast")
+async def test_build_image_reports_failure() -> None:
+    podman = FakePodman()
+    podman.build_result = BuildResult(
+        success=False, image_id="", output="error building\n"
+    )
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()))
+
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+    result = await runner.build_image(
+        handle, BuildImageRequest(tag="app:abc", context_path="/ws")
+    )
+
+    assert result.success is False
+    assert_eq(result.image_id, "")
 
 
 @test(mark="fast")

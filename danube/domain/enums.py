@@ -26,6 +26,18 @@ class StepStatus(StrEnum):
     FAILURE = "failure"
 
 
+class StepKind(StrEnum):
+    """What a step does, stored in `steps.kind` (`docs/adr/0001-host-side-image-build.md`).
+
+    `run` is a command in a fresh Worker shell; `build` is a host-side Image Build;
+    `push` is a host-side Image Push to an external Registry. The default is `run`.
+    """
+
+    RUN = "run"
+    BUILD = "build"
+    PUSH = "push"
+
+
 class TriggerType(StrEnum):
     """How a job was triggered, stored in `jobs.trigger_type`."""
 

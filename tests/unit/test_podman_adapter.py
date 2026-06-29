@@ -6,6 +6,12 @@ translation (where the security defaults are encoded). The HTTP round-trips
 themselves are exercised by the socket-guarded integration tests.
 """
 
+import io
+import json
+import tarfile
+import tempfile
+from pathlib import Path
+
 from snektest import assert_eq, test
 
 from danube.runner.podman import Mount, ResourceLimits
@@ -13,6 +19,8 @@ from danube.runner.podman.adapter import (
     ContainerSpec,
     _container_body,
     demultiplex_stream,
+    parse_build_stream,
+    tar_build_context,
 )
 
 
@@ -114,6 +122,78 @@ def test_container_body_omits_no_new_privileges_when_disabled() -> None:
 
     assert "security_opt" not in body
     assert "resource_limits" not in body
+
+
+def _ndjson(*messages: dict[str, object]) -> bytes:
+    return b"".join(json.dumps(message).encode() + b"\n" for message in messages)
+
+
+@test(mark="fast")
+def test_parse_build_stream_success_from_aux_id() -> None:
+    content = _ndjson(
+        {"stream": "STEP 1/2: FROM scratch\n"},
+        {"stream": "STEP 2/2: COPY app /app\n"},
+        {"aux": {"ID": "sha256:abc123"}},
+        {"stream": "Successfully tagged localhost/app:latest\n"},
+    )
+
+    result = parse_build_stream(content)
+
+    assert result.success is True
+    assert_eq(result.image_id, "sha256:abc123")
+    assert "STEP 1/2" in result.output
+
+
+@test(mark="fast")
+def test_parse_build_stream_success_from_built_line() -> None:
+    # Some builders report the id only via a `Successfully built` stream line.
+    content = _ndjson({"stream": "Successfully built deadbeef99\n"})
+
+    result = parse_build_stream(content)
+
+    assert result.success is True
+    assert_eq(result.image_id, "deadbeef99")
+
+
+@test(mark="fast")
+def test_parse_build_stream_failure_records_error_and_no_id() -> None:
+    content = _ndjson(
+        {"stream": "STEP 1/1: RUN false\n"},
+        {"error": "error building: exit status 1", "errorDetail": {"message": "boom"}},
+    )
+
+    result = parse_build_stream(content)
+
+    assert result.success is False
+    assert_eq(result.image_id, "")
+    assert "error building" in result.output
+
+
+@test(mark="fast")
+def test_parse_build_stream_no_image_id_is_failure() -> None:
+    # Output with neither an image id nor an error still cannot be called a success.
+    result = parse_build_stream(_ndjson({"stream": "noise\n"}))
+
+    assert result.success is False
+    assert_eq(result.image_id, "")
+
+
+@test(mark="fast")
+def test_tar_build_context_packs_dockerfile_at_root() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        context = Path(raw)
+        (context / "Dockerfile").write_text("FROM scratch\n")
+        (context / "src").mkdir()
+        (context / "src" / "app.py").write_text("print('hi')\n")
+
+        archive = tar_build_context(context)
+
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        names = set(tar.getnames())
+    # The Dockerfile lands at the archive root (no context-dir prefix) so libpod's
+    # default `dockerfile=Dockerfile` resolves it.
+    assert "Dockerfile" in names
+    assert "src/app.py" in names
 
 
 @test(mark="fast")

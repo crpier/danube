@@ -96,6 +96,14 @@ class StepError(Exception):
         super().__init__(f"command {command!r} exited with code {exit_code}")
 
 
+class BuildError(Exception):
+    """An `images.build` failed (the Dockerfile did not build successfully)."""
+
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+        super().__init__(f"image build for {tag!r} failed")
+
+
 @dataclass(frozen=True, slots=True)
 class StepResult:
     """Captured outcome of a step, returned by `step.capture`."""
@@ -112,6 +120,17 @@ class UploadedArtifact:
     artifact_id: str
     name: str
     size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class BuiltImage:
+    """A container image produced by `images.build`.
+
+    `tag` is the applied (raw, user-controlled) tag; `digest` is the image's
+    id/digest in the host Local Image Store."""
+
+    tag: str
+    digest: str
 
 
 class RpcClient:
@@ -221,6 +240,50 @@ class StepApi:
         )
 
 
+class ImagesApi:
+    """`images` namespace: build container images on the host from the workspace.
+
+    A build runs on the host's rootless Podman (the same daemon as the job pods),
+    never inside the Worker, and lands in the host Local Image Store
+    (`docs/adr/0001-host-side-image-build.md`). Tags are raw and user-controlled,
+    so a pipeline disambiguates concurrent builds itself, typically with the Job
+    Context commit sha:
+
+        tag = f"myapp:{danube.context.sha or 'latest'}"
+        image = await danube.images.build(tag)
+    """
+
+    def __init__(self, client: RpcClient) -> None:
+        self._client = client
+
+    async def build(
+        self,
+        tag: str,
+        *,
+        context: str = ".",
+        dockerfile: str = "Dockerfile",
+        name: str | None = None,
+    ) -> BuiltImage:
+        """Build and tag an image from ``context`` (a workspace-relative directory)
+        using ``dockerfile`` within it, and return the `BuiltImage`.
+
+        A build whose Dockerfile fails raises `BuildError`; the failed `build` step
+        is still recorded. `build_args` and `--secret` mounts are a later slice, so
+        do not pass secrets through the build context."""
+        data = await self._client.post(
+            "/rpc/build-image",
+            {
+                "tag": tag,
+                "context": context,
+                "dockerfile": dockerfile,
+                "name": name,
+            },
+        )
+        if not data.get("success"):
+            raise BuildError(tag)
+        return BuiltImage(tag=str(data["tag"]), digest=str(data["digest"]))
+
+
 class SecretsApi:
     """`secrets` namespace: fetch decrypted secrets the pipeline is authorized for."""
 
@@ -271,8 +334,8 @@ class StatusApi:
 
 
 class DanubeClient:
-    """Pipeline-facing SDK facade: `context`, `step`, `secrets`, `artifacts`,
-    `status`."""
+    """Pipeline-facing SDK facade: `context`, `step`, `images`, `secrets`,
+    `artifacts`, `status`."""
 
     def __init__(
         self,
@@ -293,6 +356,7 @@ class DanubeClient:
         )
         client = RpcClient(http, job_id, token)
         self.step = StepApi(client)
+        self.images = ImagesApi(client)
         self.secrets = SecretsApi(client)
         self.artifacts = ArtifactsApi(client)
         self.status = StatusApi(client)
