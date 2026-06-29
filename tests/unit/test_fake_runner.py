@@ -6,6 +6,8 @@ from typing import assert_type
 from snektest import assert_eq, assert_raises, test
 
 from danube.domain.runner_types import (
+    BuildImageRequest,
+    BuildImageResult,
     CoordinatorExit,
     ExecResult,
     ExecStepRequest,
@@ -201,6 +203,50 @@ async def test_start_coordinator_against_inactive_job_raises() -> None:
 
     with assert_raises(JobNotActiveError):
         await runner.start_coordinator(handle, {})
+
+
+@test(mark="fast")
+async def test_build_image_scripted_per_tag_and_recorded() -> None:
+    runner = FakeRunner()
+    runner.script_build(
+        "app:abc",
+        BuildImageResult(
+            success=True, image_id="sha256:1", output="built\n", tag="app:abc"
+        ),
+    )
+    handle = await runner.start_job(START)
+    request = BuildImageRequest(tag="app:abc", context_path="/fake/workspaces/j1")
+
+    result = await runner.build_image(handle, request)
+
+    assert result.success is True
+    assert_eq(result.image_id, "sha256:1")
+    assert_eq(runner.method_names, ["start_job", "build_image"])
+    assert_eq(runner.calls[-1], RecordedCall("build_image", (handle, request)))
+
+
+@test(mark="fast")
+async def test_build_image_default_result_when_unscripted() -> None:
+    runner = FakeRunner()
+    handle = await runner.start_job(START)
+
+    result = await runner.build_image(
+        handle, BuildImageRequest(tag="x:1", context_path="/ws")
+    )
+
+    assert result.success is True
+
+
+@test(mark="fast")
+async def test_build_image_against_inactive_job_raises() -> None:
+    runner = FakeRunner()
+    handle = await runner.start_job(START)
+    await runner.cleanup_job(handle)
+
+    with assert_raises(JobNotActiveError):
+        await runner.build_image(
+            handle, BuildImageRequest(tag="x:1", context_path="/ws")
+        )
 
 
 @test(mark="fast")

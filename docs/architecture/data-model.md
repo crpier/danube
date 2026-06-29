@@ -71,6 +71,7 @@ CREATE TABLE steps (
     name TEXT NOT NULL,
     sequence INTEGER NOT NULL,
     command TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'run',  -- 'run' | 'build' | 'push' (Step Kind)
     status TEXT NOT NULL DEFAULT 'pending',
     exit_code INTEGER,
     started_at TEXT,

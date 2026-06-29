@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from danube.domain.runner_types import (
+    BuildImageRequest,
+    BuildImageResult,
     CoordinatorExit,
     ExecResult,
     ExecStepRequest,
@@ -30,6 +32,9 @@ CoordinatorProgram = Callable[[Mapping[str, str]], Awaitable[int]]
 # `reportCallInDefaultInitializer`, so the fallbacks live as module constants.
 _DEFAULT_RESULT = ExecResult(exit_code=0, stdout="", stderr="")
 _DEFAULT_HEALTH = RunnerHealth(healthy=True, runtime="fake")
+_DEFAULT_BUILD = BuildImageResult(
+    success=True, image_id="sha256:fake", output="", tag="fake:latest"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +85,7 @@ class FakeRunner:
         self._states: dict[str, _JobState] = {}
         self._results_by_command: dict[str, deque[ExecResult]] = {}
         self._result_sequence: deque[ExecResult] = deque()
+        self._builds_by_tag: dict[str, deque[BuildImageResult]] = {}
         self._coordinator_env: dict[str, str] = {}
 
     @property
@@ -97,6 +103,10 @@ class FakeRunner:
         command-specific script."""
         self._result_sequence.extend(results)
 
+    def script_build(self, tag: str, *results: BuildImageResult) -> None:
+        """Queue `results` to be returned, in order, for builds of image `tag`."""
+        self._builds_by_tag.setdefault(tag, deque()).extend(results)
+
     async def start_job(self, request: StartJobRequest) -> JobHandle:
         self.calls.append(RecordedCall("start_job", (request,)))
         self._states[request.job_id] = _JobState.ACTIVE
@@ -111,6 +121,17 @@ class FakeRunner:
         if self._states.get(job.job_id) is not _JobState.ACTIVE:
             raise JobNotActiveError(job.job_id)
         return self._next_result(request.command)
+
+    async def build_image(
+        self, job: JobHandle, request: BuildImageRequest
+    ) -> BuildImageResult:
+        self.calls.append(RecordedCall("build_image", (job, request)))
+        if self._states.get(job.job_id) is not _JobState.ACTIVE:
+            raise JobNotActiveError(job.job_id)
+        scripted = self._builds_by_tag.get(request.tag)
+        if scripted:
+            return scripted.popleft()
+        return _DEFAULT_BUILD
 
     async def start_coordinator(self, job: JobHandle, env: Mapping[str, str]) -> None:
         self.calls.append(RecordedCall("start_coordinator", (job, dict(env))))

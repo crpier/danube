@@ -17,13 +17,16 @@ References: `docs/architecture/local-runner.md` (Podman API), Podman libpod API.
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import tarfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
 
+import anyio.to_thread
 import httpx
 
 # libpod API version segment. Podman is backward compatible across minor
@@ -124,6 +127,20 @@ class ExecSpec:
     user: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class BuildSpec:
+    """A host-side image build: a build context directory, a Containerfile path
+    within it, and the tag to apply.
+
+    `network` is the networking mode for `RUN` instructions; Danube defaults it to
+    `none` so build steps cannot reach the network (`docs/adr/0001-host-side-image-build.md`)."""
+
+    context_path: str
+    tag: str
+    dockerfile: str = "Dockerfile"
+    network: str = "none"
+
+
 # --- Results (Podman responses -> Danube dataclasses) -----------------------
 
 
@@ -158,6 +175,19 @@ class ExecInspect:
 
     exit_code: int
     running: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BuildResult:
+    """Outcome of an image build parsed from the libpod build stream.
+
+    `success` is true only when the stream carried a built image id and no error;
+    `image_id` is that id (empty on failure); `output` is the human-readable build
+    log (progress and any error message), suitable for the job log."""
+
+    success: bool
+    image_id: str
+    output: str
 
 
 class PodmanError(Exception):
@@ -202,6 +232,7 @@ class PodmanAPI(Protocol):
     async def exec_create(self, container: str, spec: ExecSpec) -> str: ...
     async def exec_start(self, exec_id: str) -> ExecOutput: ...
     async def exec_inspect(self, exec_id: str) -> ExecInspect: ...
+    async def build_image(self, spec: BuildSpec) -> BuildResult: ...
 
 
 # --- Stream demultiplexing --------------------------------------------------
@@ -237,6 +268,90 @@ def demultiplex_stream(data: bytes) -> ExecOutput:
         stdout=stdout.decode("utf-8", "replace"),
         stderr=stderr.decode("utf-8", "replace"),
     )
+
+
+# --- Build context + stream parsing -----------------------------------------
+
+
+def tar_build_context(context_path: str | Path) -> bytes:
+    """Pack a build-context directory into an uncompressed tar archive.
+
+    Members are stored relative to the context root (so a `Dockerfile` at the
+    root lands at the archive root), which is the layout libpod's `/build`
+    endpoint expects. Blocking IO: call it off the event loop."""
+    root = Path(context_path)
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for child in sorted(root.iterdir()):
+            archive.add(child, arcname=child.name)
+    return buffer.getvalue()
+
+
+def parse_build_stream(content: bytes) -> BuildResult:
+    """Parse the libpod `/build` newline-delimited JSON stream into a `BuildResult`.
+
+    Each line is a JSON object: `{"stream": "..."}` carries build output,
+    `{"error": "..."}` (or `errorDetail`) signals failure, and `{"aux": {"ID": ...}}`
+    or a trailing ``Successfully built <id>`` line carries the built image id. The
+    build succeeds only if an image id was seen and no error occurred. Non-JSON or
+    blank lines are tolerated so a partial trailing chunk never raises."""
+    output = io.StringIO()
+    image_id = ""
+    errored = False
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            message: object = json.loads(line)
+        except json.JSONDecodeError:
+            _ = output.write(line.decode("utf-8", "replace"))
+            continue
+        if not isinstance(message, dict):
+            continue
+        record = cast("dict[str, Any]", message)
+        stream = record.get("stream")
+        if isinstance(stream, str):
+            _ = output.write(stream)
+            built = _built_image_id(stream)
+            if built:
+                image_id = built
+        aux = record.get("aux")
+        if isinstance(aux, dict):
+            aux_id = cast("dict[str, Any]", aux).get("ID")
+            if isinstance(aux_id, str) and aux_id:
+                image_id = aux_id
+        error: object = record.get("error") or record.get("errorDetail")
+        if error:
+            errored = True
+            _ = output.write(_error_text(error))
+    return BuildResult(
+        success=bool(image_id) and not errored,
+        image_id=image_id,
+        output=output.getvalue(),
+    )
+
+
+_BUILT_PREFIX = "Successfully built "
+
+
+def _built_image_id(stream: str) -> str:
+    """Extract the image id from a ``Successfully built <id>`` progress line."""
+    for piece in stream.splitlines():
+        text = piece.strip()
+        if text.startswith(_BUILT_PREFIX):
+            return text.removeprefix(_BUILT_PREFIX).strip()
+    return ""
+
+
+def _error_text(error: object) -> str:
+    if isinstance(error, str):
+        return error
+    if isinstance(error, dict):
+        message = cast("dict[str, Any]", error).get("message")
+        if isinstance(message, str):
+            return message
+    return ""
 
 
 def build_async_client(socket_path: Path | str | None = None) -> httpx.AsyncClient:
@@ -416,6 +531,33 @@ class PodmanAdapter:
             exit_code=int(exit_code) if exit_code is not None else -1,
             running=bool(data.get("Running", False)),
         )
+
+    async def build_image(self, spec: BuildSpec) -> BuildResult:
+        # `/build` takes the context as a tar request body and streams progress as
+        # newline-delimited JSON; `networkmode=none` disables networking for `RUN`.
+        # A failed build still returns 200 with an `error` record in the stream, so
+        # success is decided by the parser, not the HTTP status.
+        archive = await anyio.to_thread.run_sync(tar_build_context, spec.context_path)
+        params = {
+            "dockerfile": spec.dockerfile,
+            "t": spec.tag,
+            "networkmode": spec.network,
+        }
+        method = "POST"
+        path = f"{self._prefix}/build"
+        async with self._client.stream(
+            method,
+            path,
+            params=params,
+            content=archive,
+            headers={"Content-Type": "application/x-tar"},
+        ) as response:
+            content = await response.aread()
+        if response.status_code != _HTTP_OK:
+            raise PodmanError(
+                method, path, response.status_code, content.decode("utf-8", "replace")
+            )
+        return parse_build_stream(content)
 
 
 def _json_bool(*, value: bool) -> str:

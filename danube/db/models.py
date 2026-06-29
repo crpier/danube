@@ -138,6 +138,9 @@ class Step[S = Pending](sqlite.Model[S, "Step[Fetched]"]):
     name: Step.Col[str] = sqlite.Text(nullable=False)
     sequence: Step.Col[int] = sqlite.Integer(nullable=False)
     command: Step.Col[str] = sqlite.Text(nullable=False)
+    # `run` | `build` | `push` discriminator (`danube.domain.enums.StepKind`); a
+    # client default fills it on plain command steps so callers stay unchanged.
+    kind: Step.Col[str] = sqlite.Text(nullable=False, default="run")
     status: Step.Col[str] = sqlite.Text(nullable=False, default="pending")
     exit_code: Step.Col[int | None] = sqlite.Integer(nullable=True, default=None)
     started_at: Step.Col[datetime | None] = sqlite.Text(nullable=True, default=None)

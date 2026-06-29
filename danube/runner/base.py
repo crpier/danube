@@ -10,6 +10,8 @@ from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from danube.domain.runner_types import (
+    BuildImageRequest,
+    BuildImageResult,
     CoordinatorExit,
     ExecResult,
     ExecStepRequest,
@@ -31,6 +33,14 @@ class Runner(Protocol):
 
     async def exec_step(self, job: JobHandle, request: ExecStepRequest) -> ExecResult:
         """Run a single command in the job's Worker and return its outcome."""
+        ...
+
+    async def build_image(
+        self, job: JobHandle, request: BuildImageRequest
+    ) -> BuildImageResult:
+        """Build a container image on the host Podman from a context in the job's
+        workspace and tag it into the Local Image Store. Never runs in the Worker
+        (`docs/adr/0001-host-side-image-build.md`)."""
         ...
 
     async def start_coordinator(self, job: JobHandle, env: Mapping[str, str]) -> None:

@@ -32,12 +32,20 @@ import anyio.to_thread
 from snekql.sqlite import Database, insert, select, update
 
 from danube.db.models import Artifact, Job, Step
-from danube.domain.enums import JobStatus, StepStatus
+from danube.domain.enums import JobStatus, StepKind, StepStatus
 from danube.domain.lifecycle import transition
-from danube.domain.runner_types import ExecStepRequest, JobHandle
+from danube.domain.runner_types import (
+    BuildImageRequest as RunnerBuildImageRequest,
+)
+from danube.domain.runner_types import (
+    ExecStepRequest,
+    JobHandle,
+)
 from danube.observability import Tracer
 from danube.orchestrator.log_writer import LogWriter
 from danube.rpc.schemas import (
+    BuildImageRequest,
+    BuildImageResponse,
     ReportStatusResponse,
     RunStepRequest,
     RunStepResponse,
@@ -102,6 +110,20 @@ class ArtifactSourceError(RpcError):
         self.target = target
         self.reason = reason
         super().__init__(f"artifact {target!r} {reason}")
+
+
+class BuildContextError(RpcError):
+    """The build context or Containerfile for an Image Build is invalid.
+
+    Covers a context that escapes the workspace or is not a directory, and a
+    Containerfile that escapes the context or does not exist. `reason` describes
+    which failed; `target` is the offending context or dockerfile path.
+    """
+
+    def __init__(self, target: str, reason: str) -> None:
+        self.target = target
+        self.reason = reason
+        super().__init__(f"build context {target!r} {reason}")
 
 
 @dataclass(slots=True)
@@ -199,7 +221,18 @@ class ControlPlane:
             # be persisted verbatim to the step record (Secrets Access,
             # execution-model.md).
             logged_command = scrub_secrets(request.command, secret_values)
-            await self._begin_step(step_id, job_id, sequence, name, logged_command)
+            await self._begin_step(
+                Step(
+                    id=step_id,
+                    job_id=job_id,
+                    name=name,
+                    sequence=sequence,
+                    command=logged_command,
+                    kind=StepKind.RUN,
+                    status=StepStatus.RUNNING,
+                    started_at=_now(),
+                )
+            )
 
             with self._tracer.span("runner exec", job_id=job_id, step=name):
                 result = await self._runner.exec_step(
@@ -215,6 +248,59 @@ class ControlPlane:
             exit_code=result.exit_code,
             stdout=result.stdout if request.capture_output else None,
             stderr=result.stderr if request.capture_output else None,
+        )
+
+    async def build_image(
+        self, job_id: str, token: str, request: BuildImageRequest
+    ) -> BuildImageResponse:
+        """Build an image on the host Podman from a workspace build context.
+
+        Records a `kind=build` step, drives the build through the runner (host
+        Podman, never the Worker — `docs/adr/0001-host-side-image-build.md`),
+        streams the scrubbed build output to the job log, and marks the step
+        success/failure by the build outcome. The context directory and the
+        Containerfile within it are resolved inside the job workspace, so a path
+        that escapes it or does not exist is rejected before any build runs."""
+        session = await self._authorize(job_id, token)
+        secret_values = self._secrets.active_values(session.job_id)
+        sequence = session.next_sequence()
+        step_id = str(uuid.uuid4())
+        name = request.name or f"build-{sequence}"
+        context_path = await anyio.to_thread.run_sync(
+            _resolve_build_context,
+            session.handle.workspace_path,
+            request.context,
+            request.dockerfile,
+        )
+        command = f"build {request.tag} from {request.context}/{request.dockerfile}"
+        with self._tracer.span(f"build image {sequence}", job_id=job_id, step=name):
+            await self._begin_step(
+                Step(
+                    id=step_id,
+                    job_id=job_id,
+                    name=name,
+                    sequence=sequence,
+                    command=scrub_secrets(command, secret_values),
+                    kind=StepKind.BUILD,
+                    status=StepStatus.RUNNING,
+                    started_at=_now(),
+                )
+            )
+            with self._tracer.span("runner build", job_id=job_id, step=name):
+                result = await self._runner.build_image(
+                    session.handle,
+                    RunnerBuildImageRequest(
+                        tag=request.tag,
+                        context_path=str(context_path),
+                        dockerfile=request.dockerfile,
+                    ),
+                )
+            scrubbed = scrub_secrets(result.output, secret_values)
+            start, end = await session.log.write(scrubbed)
+            exit_code = 0 if result.success else 1
+            await self._finish_step(step_id, exit_code, start, end)
+        return BuildImageResponse(
+            tag=result.tag, digest=result.image_id, success=result.success
         )
 
     async def get_secret(self, job_id: str, token: str, key: str) -> str:
@@ -308,23 +394,9 @@ class ControlPlane:
     def _artifact_path(self, job_id: str, name: str) -> Path:
         return self._data_dir / "artifacts" / job_id / name
 
-    async def _begin_step(
-        self, step_id: str, job_id: str, sequence: int, name: str, command: str
-    ) -> None:
+    async def _begin_step(self, step: Step) -> None:
         async with self._db.transaction() as tx:
-            await tx.execute(
-                insert(
-                    Step(
-                        id=step_id,
-                        job_id=job_id,
-                        name=name,
-                        sequence=sequence,
-                        command=command,
-                        status=StepStatus.RUNNING,
-                        started_at=_now(),
-                    )
-                )
-            )
+            await tx.execute(insert(step))
 
     async def _finish_step(
         self, step_id: str, exit_code: int, start: int, end: int
@@ -365,6 +437,26 @@ def _copy_artifact(source: Path, destination: Path) -> int:
     else:
         _ = shutil.copy2(source, destination)
     return _tree_size(destination)
+
+
+def _resolve_build_context(workspace_path: str, context: str, dockerfile: str) -> Path:
+    """Resolve and validate an Image Build context inside the job workspace.
+
+    Returns the absolute context directory. Runs in a worker thread; raises
+    `BuildContextError` if the context escapes the workspace or is not a
+    directory, or if the Containerfile escapes the context or does not exist."""
+    workspace = Path(workspace_path).resolve()
+    context_dir = (workspace / context).resolve()
+    if not context_dir.is_relative_to(workspace):
+        raise BuildContextError(context, "escapes the job workspace")
+    if not context_dir.is_dir():
+        raise BuildContextError(context, "is not a directory in the job workspace")
+    dockerfile_path = (context_dir / dockerfile).resolve()
+    if not dockerfile_path.is_relative_to(context_dir):
+        raise BuildContextError(dockerfile, "escapes the build context")
+    if not dockerfile_path.is_file():
+        raise BuildContextError(dockerfile, "does not exist in the build context")
+    return context_dir
 
 
 def _capture_artifact(workspace_path: str, path: str, destination: Path) -> int:

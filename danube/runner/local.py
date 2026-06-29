@@ -37,6 +37,8 @@ from danube.db.models import Job, RunnerState
 from danube.domain.enums import JobStatus
 from danube.domain.lifecycle import ACTIVE_STATES
 from danube.domain.runner_types import (
+    BuildImageRequest,
+    BuildImageResult,
     CoordinatorExit,
     ExecResult,
     ExecStepRequest,
@@ -46,6 +48,7 @@ from danube.domain.runner_types import (
     StartJobRequest,
 )
 from danube.runner.podman import (
+    BuildSpec,
     ContainerSpec,
     ExecSpec,
     Mount,
@@ -235,6 +238,29 @@ class LocalContainerRunner:
             exit_code=inspect.exit_code,
             stdout=output.stdout,
             stderr=output.stderr,
+        )
+
+    async def build_image(
+        self, job: JobHandle, request: BuildImageRequest
+    ) -> BuildImageResult:
+        """Build an image on the host Podman from a workspace build context.
+
+        The build runs on the same rootless Podman as the job pods, not inside the
+        Worker, and tags into the shared Local Image Store. `RUN` networking is
+        disabled by the adapter's `BuildSpec` default (`docs/adr/0001-host-side-image-build.md`)."""
+        logger.info("building image %s for job %s", request.tag, job.job_id)
+        result = await self._podman.build_image(
+            BuildSpec(
+                context_path=request.context_path,
+                tag=request.tag,
+                dockerfile=request.dockerfile,
+            )
+        )
+        return BuildImageResult(
+            success=result.success,
+            image_id=result.image_id,
+            output=result.output,
+            tag=request.tag,
         )
 
     async def start_coordinator(self, job: JobHandle, env: Mapping[str, str]) -> None:

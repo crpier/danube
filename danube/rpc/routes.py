@@ -14,12 +14,15 @@ from fastapi import APIRouter, HTTPException, status
 from danube.domain.lifecycle import InvalidTransition
 from danube.rpc.control_plane import (
     ArtifactSourceError,
+    BuildContextError,
     InvalidTokenError,
     SecretNotAuthorizedError,
     SessionNotActiveError,
 )
 from danube.rpc.deps import ControlPlaneDep, TokenDep
 from danube.rpc.schemas import (
+    BuildImageRequest,
+    BuildImageResponse,
     GetSecretRequest,
     GetSecretResponse,
     ReportStatusRequest,
@@ -49,6 +52,20 @@ async def run_step(
         return await control_plane.run_step(request.job_id, token, request)
     except (SessionNotActiveError, InvalidTokenError) as error:
         raise _reject_session(error) from None
+
+
+@router.post("/build-image")
+async def build_image(
+    request: BuildImageRequest, token: TokenDep, control_plane: ControlPlaneDep
+) -> BuildImageResponse:
+    try:
+        return await control_plane.build_image(request.job_id, token, request)
+    except (SessionNotActiveError, InvalidTokenError) as error:
+        raise _reject_session(error) from None
+    except BuildContextError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+        ) from None
 
 
 @router.post("/get-secret")

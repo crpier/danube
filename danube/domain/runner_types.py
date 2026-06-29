@@ -52,6 +52,31 @@ class ExecResult(_Frozen):
     stderr: str
 
 
+class BuildImageRequest(_Frozen):
+    """Asks the runner to build a container image on the host Podman.
+
+    `context_path` is the host-absolute build-context directory (the Master has
+    already resolved it inside the job workspace); `dockerfile` is the
+    Containerfile path relative to that context. Builds run with networking
+    disabled for `RUN` instructions (`docs/adr/0001-host-side-image-build.md`)."""
+
+    tag: NonEmptyStr
+    context_path: NonEmptyStr
+    dockerfile: NonEmptyStr = "Dockerfile"
+
+
+class BuildImageResult(_Frozen):
+    """Outcome of a host-side Image Build.
+
+    `image_id` is the built image's id/digest, empty when the build failed.
+    `output` is the combined build log, streamed to the job log by the Master."""
+
+    success: bool
+    image_id: str
+    output: str
+    tag: NonEmptyStr
+
+
 class CoordinatorExit(_Frozen):
     """Outcome of the Coordinator process that drove a job's pipeline.
 

@@ -44,6 +44,29 @@ class RunStepResponse(BaseModel):
     stderr: str | None = None
 
 
+class BuildImageRequest(_Request):
+    """Ask the Master to build a container image on the host Podman.
+
+    `context` is a build-context directory relative to the job workspace and
+    `dockerfile` is the Containerfile path within it; both default to the common
+    case. `tag` is raw and user-controlled (pipelines disambiguate with the Job
+    Context, e.g. the commit sha)."""
+
+    tag: NonEmptyStr
+    context: NonEmptyStr = "."
+    dockerfile: NonEmptyStr = "Dockerfile"
+    name: str | None = None
+
+
+class BuildImageResponse(BaseModel):
+    """Outcome of a `build-image` call: the applied tag, the built image's
+    id/digest (empty when the build failed), and whether it succeeded."""
+
+    tag: str
+    digest: str
+    success: bool
+
+
 class GetSecretRequest(_Request):
     """Fetch a single decrypted secret value the pipeline is authorized for."""
 
