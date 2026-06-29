@@ -83,6 +83,45 @@ class BuildImageResult(_Frozen):
     tag: NonEmptyStr
 
 
+class RegistryCredentials(_Frozen):
+    """Username/password an Image Push authenticates to a Registry with.
+
+    The password is a secret value the pipeline fetched (typically via
+    `secrets.get`); it never lands in the recorded step command and is scrubbed
+    from the streamed push log."""
+
+    username: NonEmptyStr
+    password: NonEmptyStr
+
+
+class PushImageRequest(_Frozen):
+    """Asks the runner to push a tagged image to an external Registry.
+
+    `tag` is the source reference in the host Local Image Store; `registry` is the
+    target Registry host (e.g. ``registry.example.com:5000``). The runner pushes to
+    ``<registry>/<tag>``. `credentials` authenticate the push when the Registry
+    requires it; `tls_verify` defaults on and is only turned off for an insecure
+    (HTTP/self-signed) Registry."""
+
+    tag: NonEmptyStr
+    registry: NonEmptyStr
+    credentials: RegistryCredentials | None = None
+    tls_verify: bool = True
+
+
+class PushImageResult(_Frozen):
+    """Outcome of a host-side Image Push.
+
+    `reference` is the full pushed target reference (``<registry>/<tag>``).
+    `digest` is the pushed manifest digest when the Registry reported one (empty
+    otherwise). `output` is the combined push log, streamed to the job log."""
+
+    success: bool
+    reference: str
+    digest: str
+    output: str
+
+
 class CoordinatorExit(_Frozen):
     """Outcome of the Coordinator process that drove a job's pipeline.
 

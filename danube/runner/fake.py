@@ -18,6 +18,8 @@ from danube.domain.runner_types import (
     ExecResult,
     ExecStepRequest,
     JobHandle,
+    PushImageRequest,
+    PushImageResult,
     ReconcileReport,
     RunnerHealth,
     StartJobRequest,
@@ -34,6 +36,9 @@ _DEFAULT_RESULT = ExecResult(exit_code=0, stdout="", stderr="")
 _DEFAULT_HEALTH = RunnerHealth(healthy=True, runtime="fake")
 _DEFAULT_BUILD = BuildImageResult(
     success=True, image_id="sha256:fake", output="", tag="fake:latest"
+)
+_DEFAULT_PUSH = PushImageResult(
+    success=True, reference="fake:latest", digest="sha256:fake", output=""
 )
 
 
@@ -86,6 +91,7 @@ class FakeRunner:
         self._results_by_command: dict[str, deque[ExecResult]] = {}
         self._result_sequence: deque[ExecResult] = deque()
         self._builds_by_tag: dict[str, deque[BuildImageResult]] = {}
+        self._pushes_by_tag: dict[str, deque[PushImageResult]] = {}
         self._coordinator_env: dict[str, str] = {}
 
     @property
@@ -106,6 +112,10 @@ class FakeRunner:
     def script_build(self, tag: str, *results: BuildImageResult) -> None:
         """Queue `results` to be returned, in order, for builds of image `tag`."""
         self._builds_by_tag.setdefault(tag, deque()).extend(results)
+
+    def script_push(self, tag: str, *results: PushImageResult) -> None:
+        """Queue `results` to be returned, in order, for pushes of image `tag`."""
+        self._pushes_by_tag.setdefault(tag, deque()).extend(results)
 
     async def start_job(self, request: StartJobRequest) -> JobHandle:
         self.calls.append(RecordedCall("start_job", (request,)))
@@ -132,6 +142,17 @@ class FakeRunner:
         if scripted:
             return scripted.popleft()
         return _DEFAULT_BUILD
+
+    async def push_image(
+        self, job: JobHandle, request: PushImageRequest
+    ) -> PushImageResult:
+        self.calls.append(RecordedCall("push_image", (job, request)))
+        if self._states.get(job.job_id) is not _JobState.ACTIVE:
+            raise JobNotActiveError(job.job_id)
+        scripted = self._pushes_by_tag.get(request.tag)
+        if scripted:
+            return scripted.popleft()
+        return _DEFAULT_PUSH
 
     async def start_coordinator(self, job: JobHandle, env: Mapping[str, str]) -> None:
         self.calls.append(RecordedCall("start_coordinator", (job, dict(env))))

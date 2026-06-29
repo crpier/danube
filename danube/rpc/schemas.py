@@ -73,6 +73,43 @@ class BuildImageResponse(BaseModel):
     success: bool
 
 
+class RegistryCredentials(BaseModel):
+    """Username/password an Image Push authenticates to a Registry with.
+
+    The password is a secret value; it rides in the RPC body (never logged) and is
+    scrubbed from the streamed push log, but is never written to the step record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    username: NonEmptyStr
+    password: NonEmptyStr
+
+
+class PushImageRequest(_Request):
+    """Ask the Master to push a tagged image to an external Registry.
+
+    `tag` is the source reference in the host Local Image Store; `registry` is the
+    target Registry host. The Master pushes to ``<registry>/<tag>``. `credentials`
+    authenticate the push when the Registry requires it. `tls_verify` defaults on
+    and is only disabled for an insecure (HTTP/self-signed) Registry."""
+
+    tag: NonEmptyStr
+    registry: NonEmptyStr
+    name: str | None = None
+    credentials: RegistryCredentials | None = None
+    tls_verify: bool = True
+
+
+class PushImageResponse(BaseModel):
+    """Outcome of a `push-image` call: the full pushed reference
+    (``<registry>/<tag>``), the pushed manifest digest (empty when unreported or on
+    failure), and whether it succeeded."""
+
+    reference: str
+    digest: str
+    success: bool
+
+
 class GetSecretRequest(_Request):
     """Fetch a single decrypted secret value the pipeline is authorized for."""
 

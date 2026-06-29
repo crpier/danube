@@ -28,11 +28,20 @@ from danube.domain.runner_types import (
     BuildImageRequest,
     BuildImageResult,
     ExecResult,
+    PushImageRequest,
+    PushImageResult,
     StartJobRequest,
 )
 from danube.rpc import ControlPlane
 from danube.runner import FakeRunner
-from danube.sdk import BuildError, DanubeClient, RpcError, StepError
+from danube.sdk import (
+    BuildError,
+    DanubeClient,
+    PushError,
+    RegistryCredentials,
+    RpcError,
+    StepError,
+)
 from danube.security import SecretCipher, SecretService, generate_key
 from examples.danubefile import pipeline
 
@@ -576,6 +585,110 @@ async def test_build_image_with_invalid_token_is_rejected() -> None:
 
     with assert_raises(RpcError) as caught:
         await h.danube(token="wrong").images.build("app:abc")
+
+    assert_eq(caught.exception.status_code, 401)
+
+
+@test(mark="medium")
+async def test_push_image_records_push_step_and_returns_reference() -> None:
+    h = await load_fixture(harness())
+    h.runner.script_push(
+        "app:abc",
+        PushImageResult(
+            success=True,
+            reference="registry.example.com/app:abc",
+            digest="sha256:deadbeef",
+            output="Copying blob sha256:abc\nWriting manifest to image destination\n",
+        ),
+    )
+
+    pushed = await h.danube().images.push(
+        "app:abc",
+        "registry.example.com",
+        credentials=RegistryCredentials("ci", "tok-123"),
+    )
+
+    # The SDK returns the full pushed reference and the manifest digest.
+    assert_eq(pushed.reference, "registry.example.com/app:abc")
+    assert_eq(pushed.digest, "sha256:deadbeef")
+    # A kind=push step is recorded with success.
+    steps = await _steps(h.db)
+    assert_eq([s.name for s in steps], ["push-1"])
+    assert_eq(steps[0].kind, StepKind.PUSH)
+    assert_eq(steps[0].status, StepStatus.SUCCESS)
+    assert_eq(steps[0].exit_code, 0)
+    # The push output is streamed to the job log.
+    logged = await anyio.Path(h.log_path()).read_text()
+    assert "Writing manifest to image destination" in logged
+    # The runner was handed the tag, registry, and credentials.
+    push_call = next(c for c in h.runner.calls if c.method == "push_image")
+    request = push_call.args[1]
+    assert isinstance(request, PushImageRequest)
+    assert_eq(request.tag, "app:abc")
+    assert_eq(request.registry, "registry.example.com")
+    assert request.credentials is not None
+    assert_eq(request.credentials.username, "ci")
+    assert_eq(request.tls_verify, True)
+
+
+@test(mark="medium")
+async def test_push_image_credentials_are_kept_out_of_the_step_record() -> None:
+    h = await load_fixture(harness())
+    # The password equals a seeded secret value, so it is also an active value the
+    # control plane scrubs from any streamed output.
+    h.runner.script_push(
+        "app:abc",
+        PushImageResult(
+            success=True,
+            reference="registry.example.com/app:abc",
+            digest="sha256:1",
+            output="auth used tok-123 to push\n",
+        ),
+    )
+
+    _ = await h.danube().images.push(
+        "app:abc",
+        "registry.example.com",
+        credentials=RegistryCredentials("ci", "tok-123"),
+    )
+
+    # The recorded command never carries the password.
+    steps = await _steps(h.db)
+    assert "tok-123" not in steps[0].command
+    # And a password that surfaces in push output is scrubbed from the log.
+    logged = await anyio.Path(h.log_path()).read_text()
+    assert "tok-123" not in logged
+    assert "***" in logged
+
+
+@test(mark="medium")
+async def test_push_image_failure_marks_step_and_raises() -> None:
+    h = await load_fixture(harness())
+    h.runner.script_push(
+        "app:abc",
+        PushImageResult(
+            success=False,
+            reference="registry.example.com/app:abc",
+            digest="",
+            output="unauthorized: authentication required\n",
+        ),
+    )
+
+    with assert_raises(PushError):
+        await h.danube().images.push("app:abc", "registry.example.com")
+
+    steps = await _steps(h.db)
+    assert_eq(steps[0].kind, StepKind.PUSH)
+    assert_eq(steps[0].status, StepStatus.FAILURE)
+    assert_eq(steps[0].exit_code, 1)
+
+
+@test(mark="medium")
+async def test_push_image_with_invalid_token_is_rejected() -> None:
+    h = await load_fixture(harness())
+
+    with assert_raises(RpcError) as caught:
+        await h.danube(token="wrong").images.push("app:abc", "registry.example.com")
 
     assert_eq(caught.exception.status_code, 401)
 

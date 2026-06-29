@@ -17,9 +17,11 @@ References: `docs/architecture/local-runner.md` (Podman API), Podman libpod API.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
+import re
 import tarfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -145,6 +147,28 @@ class BuildSpec:
     target: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RegistryAuth:
+    """Username/password for a registry push, encoded into `X-Registry-Auth`."""
+
+    username: str
+    password: str
+
+
+@dataclass(frozen=True, slots=True)
+class PushSpec:
+    """A host-side image push: a source reference in the Local Image Store, the
+    destination reference to push it to, and optional registry auth.
+
+    `tls_verify` defaults on; it is only disabled for an insecure (HTTP or
+    self-signed) registry, e.g. a throwaway local registry."""
+
+    source: str
+    destination: str
+    auth: RegistryAuth | None = None
+    tls_verify: bool = True
+
+
 # --- Results (Podman responses -> Danube dataclasses) -----------------------
 
 
@@ -194,6 +218,19 @@ class BuildResult:
     output: str
 
 
+@dataclass(frozen=True, slots=True)
+class PushResult:
+    """Outcome of an image push parsed from the libpod push stream.
+
+    `success` is true when the stream carried no error; `digest` is the pushed
+    manifest digest when one was reported (empty otherwise); `output` is the
+    human-readable push log (progress and any error message)."""
+
+    success: bool
+    digest: str
+    output: str
+
+
 class PodmanError(Exception):
     """A libpod API call returned an unexpected status."""
 
@@ -237,6 +274,7 @@ class PodmanAPI(Protocol):
     async def exec_start(self, exec_id: str) -> ExecOutput: ...
     async def exec_inspect(self, exec_id: str) -> ExecInspect: ...
     async def build_image(self, spec: BuildSpec) -> BuildResult: ...
+    async def push_image(self, spec: PushSpec) -> PushResult: ...
 
 
 # --- Stream demultiplexing --------------------------------------------------
@@ -356,6 +394,65 @@ def _error_text(error: object) -> str:
         if isinstance(message, str):
             return message
     return ""
+
+
+_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def parse_push_stream(content: bytes) -> PushResult:
+    """Parse the libpod `/images/{name}/push` newline-delimited JSON stream.
+
+    Each line is a JSON object: `{"stream": "..."}` carries push progress and
+    `{"error": "..."}` (or `errorDetail`) signals failure. The push succeeds when
+    no error record was seen. The manifest `digest` comes from an explicit
+    `{"digest": "..."}` record when present; otherwise it falls back to the *last*
+    ``sha256:<64-hex>`` token in the progress text. Last, not first: a push emits a
+    digest per blob before writing the manifest, so the manifest digest is the
+    final one — taking the first would report a blob digest instead. Non-JSON or
+    blank lines are tolerated so a partial trailing chunk never raises."""
+    output = io.StringIO()
+    explicit_digest = ""
+    progress_digest = ""
+    errored = False
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            message: object = json.loads(line)
+        except json.JSONDecodeError:
+            _ = output.write(line.decode("utf-8", "replace"))
+            continue
+        if not isinstance(message, dict):
+            continue
+        record = cast("dict[str, Any]", message)
+        stream = record.get("stream")
+        if isinstance(stream, str):
+            _ = output.write(stream)
+            found = _DIGEST_RE.findall(stream)
+            if found:
+                progress_digest = found[-1]
+        explicit = record.get("digest")
+        if isinstance(explicit, str) and explicit:
+            explicit_digest = explicit
+        error: object = record.get("error") or record.get("errorDetail")
+        if error:
+            errored = True
+            _ = output.write(_error_text(error))
+    return PushResult(
+        success=not errored,
+        digest=explicit_digest or progress_digest,
+        output=output.getvalue(),
+    )
+
+
+def _registry_auth_header(auth: RegistryAuth) -> str:
+    """Encode registry credentials into an `X-Registry-Auth` header value.
+
+    libpod (like Docker) expects a base64url-encoded JSON auth config; only the
+    username/password fields are needed for a basic-auth registry."""
+    payload = json.dumps({"username": auth.username, "password": auth.password})
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
 
 
 def build_async_client(socket_path: Path | str | None = None) -> httpx.AsyncClient:
@@ -570,6 +667,31 @@ class PodmanAdapter:
                 method, path, response.status_code, content.decode("utf-8", "replace")
             )
         return parse_build_stream(content)
+
+    async def push_image(self, spec: PushSpec) -> PushResult:
+        # `/images/{name}/push` streams progress as newline-delimited JSON; a
+        # failed push (bad/absent auth, unreachable registry) still returns 200
+        # with an `error` record in the stream, so success is decided by the
+        # parser, not the HTTP status. Auth rides in the `X-Registry-Auth` header
+        # rather than the query string so the password never lands in a logged URL.
+        params: dict[str, str] = {
+            "destination": spec.destination,
+            "tlsVerify": _json_bool(value=spec.tls_verify),
+        }
+        headers: dict[str, str] = {}
+        if spec.auth is not None:
+            headers["X-Registry-Auth"] = _registry_auth_header(spec.auth)
+        method = "POST"
+        path = f"{self._prefix}/images/{spec.source}/push"
+        async with self._client.stream(
+            method, path, params=params, headers=headers
+        ) as response:
+            content = await response.aread()
+        if response.status_code != _HTTP_OK:
+            raise PodmanError(
+                method, path, response.status_code, content.decode("utf-8", "replace")
+            )
+        return parse_push_stream(content)
 
 
 def _json_bool(*, value: bool) -> str:

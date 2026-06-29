@@ -12,6 +12,8 @@ from danube.domain.runner_types import (
     ExecResult,
     ExecStepRequest,
     JobHandle,
+    PushImageRequest,
+    PushImageResult,
     ReconcileReport,
     RunnerHealth,
     StartJobRequest,
@@ -247,6 +249,51 @@ async def test_build_image_against_inactive_job_raises() -> None:
         await runner.build_image(
             handle, BuildImageRequest(tag="x:1", context_path="/ws")
         )
+
+
+@test(mark="fast")
+async def test_push_image_scripted_per_tag_and_recorded() -> None:
+    runner = FakeRunner()
+    runner.script_push(
+        "app:abc",
+        PushImageResult(
+            success=True,
+            reference="registry.example.com/app:abc",
+            digest="sha256:1",
+            output="pushed\n",
+        ),
+    )
+    handle = await runner.start_job(START)
+    request = PushImageRequest(tag="app:abc", registry="registry.example.com")
+
+    result = await runner.push_image(handle, request)
+
+    assert result.success is True
+    assert_eq(result.digest, "sha256:1")
+    assert_eq(runner.method_names, ["start_job", "push_image"])
+    assert_eq(runner.calls[-1], RecordedCall("push_image", (handle, request)))
+
+
+@test(mark="fast")
+async def test_push_image_default_result_when_unscripted() -> None:
+    runner = FakeRunner()
+    handle = await runner.start_job(START)
+
+    result = await runner.push_image(
+        handle, PushImageRequest(tag="x:1", registry="r:5000")
+    )
+
+    assert result.success is True
+
+
+@test(mark="fast")
+async def test_push_image_against_inactive_job_raises() -> None:
+    runner = FakeRunner()
+    handle = await runner.start_job(START)
+    await runner.cleanup_job(handle)
+
+    with assert_raises(JobNotActiveError):
+        await runner.push_image(handle, PushImageRequest(tag="x:1", registry="r:5000"))
 
 
 @test(mark="fast")

@@ -43,6 +43,8 @@ from danube.domain.runner_types import (
     ExecResult,
     ExecStepRequest,
     JobHandle,
+    PushImageRequest,
+    PushImageResult,
     ReconcileReport,
     RunnerHealth,
     StartJobRequest,
@@ -55,6 +57,8 @@ from danube.runner.podman import (
     PodmanAPI,
     PodmanError,
     PodSpec,
+    PushSpec,
+    RegistryAuth,
     ResourceLimits,
 )
 
@@ -264,6 +268,42 @@ class LocalContainerRunner:
             image_id=result.image_id,
             output=result.output,
             tag=request.tag,
+        )
+
+    async def push_image(
+        self, job: JobHandle, request: PushImageRequest
+    ) -> PushImageResult:
+        """Push a tagged image to an external Registry from the host Podman.
+
+        The push runs on the same rootless Podman as the job pods, not inside the
+        Worker, reading the source `request.tag` from the shared Local Image Store
+        and uploading it to ``<registry>/<tag>``
+        (`docs/adr/0001-host-side-image-build.md`)."""
+        reference = f"{request.registry}/{request.tag}"
+        logger.info(
+            "pushing image %s to %s for job %s", request.tag, reference, job.job_id
+        )
+        auth = (
+            RegistryAuth(
+                username=request.credentials.username,
+                password=request.credentials.password,
+            )
+            if request.credentials is not None
+            else None
+        )
+        result = await self._podman.push_image(
+            PushSpec(
+                source=request.tag,
+                destination=reference,
+                auth=auth,
+                tls_verify=request.tls_verify,
+            )
+        )
+        return PushImageResult(
+            success=result.success,
+            reference=reference,
+            digest=result.digest,
+            output=result.output,
         )
 
     async def start_coordinator(self, job: JobHandle, env: Mapping[str, str]) -> None:
