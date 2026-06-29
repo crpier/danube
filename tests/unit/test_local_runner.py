@@ -29,6 +29,8 @@ from danube.domain.runner_types import (
 )
 from danube.runner.base import Runner
 from danube.runner.local import (
+    DEFAULT_EGRESS_NETWORK,
+    DEFAULT_LIMITS,
     LABEL_JOB_ID,
     LABEL_MANAGED,
     LABEL_PIPELINE_ID,
@@ -57,6 +59,7 @@ from danube.runner.podman import (
     PushSpec,
     ResourceSummary,
 )
+from danube.runner.podman.adapter import _container_body
 
 START = StartJobRequest(job_id="j1", pipeline_id="p1", worker_image="busybox:latest")
 
@@ -395,6 +398,52 @@ async def test_start_job_applies_security_defaults() -> None:
     pod_spec = _by_method(podman.calls, "create_pod").payload["spec"]
     assert isinstance(pod_spec, PodSpec)
     assert_eq(tuple(pod_spec.networks), (network.payload["name"],))
+
+
+@test(mark="fast")
+async def test_start_job_container_body_carries_isolation_profile() -> None:
+    # The unit half of issue #50: a job's container specs, once translated to the
+    # libpod SpecGenerator body the adapter sends, carry the full Isolation Profile
+    # with the runner's *resolved* default limits (not just "some limit is set").
+    podman = FakePodman()
+    data = load_fixture(data_dir())
+    runner = LocalContainerRunner(podman, data)
+
+    _ = await runner.start_job(START)
+
+    container_calls = [c for c in podman.calls if c.method == "create_container"]
+    assert_eq(len(container_calls), 2)
+    for call in container_calls:
+        body = _container_body(_spec(call))
+        assert_eq(body["privileged"], False)
+        assert_eq(body["read_only_filesystem"], True)
+        assert_eq(body["cap_drop"], ["ALL"])
+        assert_eq(body["cap_add"], [])
+        assert_eq(body["security_opt"], ["no-new-privileges"])
+        # PID and IPC namespaces are explicitly private, never the host's.
+        assert_eq(body["pidns"], {"nsmode": "private"})
+        assert_eq(body["ipcns"], {"nsmode": "private"})
+        # The resolved DEFAULT_LIMITS reach the wire body verbatim.
+        assert_eq(
+            body["resource_limits"],
+            {
+                "cpu": {
+                    "quota": DEFAULT_LIMITS.cpu_quota,
+                    "period": DEFAULT_LIMITS.cpu_period,
+                },
+                "memory": {"limit": DEFAULT_LIMITS.memory_bytes},
+                "pids": {"limit": DEFAULT_LIMITS.pids_limit},
+            },
+        )
+
+    # Egress denied by default: the pod attaches to the `internal` egress network,
+    # which the runner ensures exists with `internal=True`.
+    network = _by_method(podman.calls, "ensure_network")
+    assert_eq(network.payload["internal"], True)
+    assert_eq(network.payload["name"], DEFAULT_EGRESS_NETWORK)
+    pod_spec = _by_method(podman.calls, "create_pod").payload["spec"]
+    assert isinstance(pod_spec, PodSpec)
+    assert_eq(tuple(pod_spec.networks), (DEFAULT_EGRESS_NETWORK,))
 
 
 @test(mark="fast")

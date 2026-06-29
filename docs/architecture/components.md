@@ -174,13 +174,23 @@ pending → scheduling → running → [success | failure | timeout | cancelled]
 **Security responsibilities**:
 
 - Run containers without privileged mode
-- Avoid host network, host PID, and host IPC
-- Mount only the per-job workspace and required read-only assets
+- Avoid host network, host PID, and host IPC (PID/IPC namespaces are set
+  explicitly private, never the host's)
+- Mount only the per-job workspace (writable) and required read-only assets
 - Apply CPU, memory, and process limits
-- Drop unnecessary Linux capabilities
-- Apply seccomp/AppArmor where supported
-- Attach job containers to a controlled per-job network
+- Drop **all** Linux capabilities (`cap_drop=ALL`) and set `no-new-privileges`
+- Use a read-only root filesystem
+- Rely on Podman's default seccomp/AppArmor profiles; Danube does not yet ship a
+  custom seccomp/AppArmor profile or run as a non-root container user (deferred,
+  see epic #45)
+- Attach job containers to a controlled per-job network; egress is denied by
+  default by attaching the pod to an `internal` network
 - Enforce cleanup even after failure paths
+
+The applied profile is verified two ways (issue #50): unit tests assert the
+libpod request body carries these settings, and a Podman-gated integration test
+(`tests/integration/test_isolation_profile_podman.py`) execs into a real Worker to
+confirm the kernel enforces them.
 
 ### Log Writer
 
