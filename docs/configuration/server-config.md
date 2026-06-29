@@ -43,6 +43,24 @@ runtime = "podman"                # initial supported runtime
 coordinator_image = "danube-coordinator:latest"
 max_concurrent_jobs = 4
 
+[limits]
+# Operator-set Resource Ceiling for job resource limits (CPU/memory/pids/timeout).
+# `default` fills any limit a pipeline does not request in its Blueprint; `max` is
+# the hard cap every requested or default value is clamped to. A field left unset
+# under `default` keeps Danube's built-in conservative value; a field left unset
+# under `max` is uncapped. Pipelines request limits in the same units (see the
+# Blueprint reference).
+[limits.default]
+cpu = 2.0                         # CPU cores
+memory_mb = 2048                  # mebibytes
+pids = 512                        # max process count
+timeout_seconds = 3600            # wall-clock job timeout
+[limits.max]
+cpu = 8.0
+memory_mb = 16384
+pids = 4096
+timeout_seconds = 7200
+
 [networking]
 default_deny_egress = true
 egress_proxy_enabled = true
@@ -193,6 +211,7 @@ Reloadable:
 - observability settings
 - Blueprint repo settings
 - runner concurrency limits where supported
+- the job Resource Ceiling (`[limits]`) — applied to jobs scheduled after reload
 - egress allowlist through Blueprint sync
 
 Requires restart:

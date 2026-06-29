@@ -22,6 +22,7 @@ from danube.api import create_app
 from danube.auth import AuthConfig
 from danube.configsource import str_source
 from danube.db import open_database
+from danube.domain.limits import DEFAULT_CEILING, ResourceCeiling
 from danube.observability import (
     Metrics,
     ObservabilityConfig,
@@ -75,6 +76,10 @@ class MasterConfig:
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     auth: AuthConfig | None = None
     spa_dir: Path | None = None
+    # Operator-set Resource Ceiling (`[limits]`): the `default` applied to a job's
+    # unrequested limits and the `max` every request is clamped to (#53). Defaults
+    # to the built-in conservative ceiling when the section is absent.
+    limits: ResourceCeiling = DEFAULT_CEILING
 
 
 def _read_config_file(config_path: Path | None) -> dict[str, Any]:
@@ -123,6 +128,7 @@ def load_config(config_path: Path | None) -> MasterConfig:
         ),
         auth=AuthConfig.from_sources(_section(table, "auth")),
         spa_dir=_resolve_spa_dir(),
+        limits=ResourceCeiling.from_table(_section(table, "limits")),
     )
 
 

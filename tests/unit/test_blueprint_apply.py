@@ -16,6 +16,7 @@ from danube.blueprint import Blueprint, apply_blueprint
 from danube.blueprint.spec import (
     PermissionSpec,
     PipelineDocument,
+    PipelineLimits,
     PipelineMetadata,
     PipelineSpec,
     PipelineTrigger,
@@ -58,6 +59,7 @@ def _pipeline(
     image: str = "node:20-alpine",
     cron: str | None = None,
     egress: bool = False,
+    limits: PipelineLimits | None = None,
     permissions: list[PermissionSpec] | None = None,
 ) -> PipelineDocument:
     triggers = [PipelineTrigger(on="cron", schedule=cron)] if cron is not None else []
@@ -70,6 +72,7 @@ def _pipeline(
             worker=WorkerSpec(image=image),
             triggers=triggers,
             egress=egress,
+            limits=limits or PipelineLimits(),
             permissions=permissions or [],
         ),
     )
@@ -223,6 +226,73 @@ async def test_changing_egress_updates_the_pipeline() -> None:
             select(Pipeline).where(Pipeline.name.eq("frontend"))
         )
     assert_eq(frontend.egress, True)
+
+
+@test(mark="fast")
+async def test_pipeline_limits_default_to_null() -> None:
+    database = await load_fixture(db())
+    blueprint = _blueprint(
+        teams=[_team("engineering", [])],
+        pipelines=[_pipeline("frontend", "engineering")],
+    )
+
+    _ = await apply_blueprint(database, blueprint)
+
+    async with database.transaction() as tx:
+        frontend = await tx.fetch_one(
+            select(Pipeline).where(Pipeline.name.eq("frontend"))
+        )
+    assert_eq(frontend.limit_cpu, None)
+    assert_eq(frontend.limit_memory_mb, None)
+    assert_eq(frontend.limit_pids, None)
+
+
+@test(mark="fast")
+async def test_requested_limits_are_persisted_and_updated() -> None:
+    database = await load_fixture(db())
+    teams = [_team("engineering", [])]
+    _ = await apply_blueprint(
+        database,
+        _blueprint(
+            teams=teams,
+            pipelines=[
+                _pipeline(
+                    "frontend",
+                    "engineering",
+                    limits=PipelineLimits(cpu=1.5, memory_mb=1024, pids=256),
+                )
+            ],
+        ),
+    )
+
+    async with database.transaction() as tx:
+        frontend = await tx.fetch_one(
+            select(Pipeline).where(Pipeline.name.eq("frontend"))
+        )
+    assert_eq(frontend.limit_cpu, 1.5)
+    assert_eq(frontend.limit_memory_mb, 1024)
+    assert_eq(frontend.limit_pids, 256)
+
+    diff = await apply_blueprint(
+        database,
+        _blueprint(
+            teams=teams,
+            pipelines=[
+                _pipeline(
+                    "frontend",
+                    "engineering",
+                    limits=PipelineLimits(cpu=3.0, memory_mb=1024, pids=256),
+                )
+            ],
+        ),
+    )
+
+    assert_eq(diff.pipelines.updated, ["frontend"])
+    async with database.transaction() as tx:
+        frontend = await tx.fetch_one(
+            select(Pipeline).where(Pipeline.name.eq("frontend"))
+        )
+    assert_eq(frontend.limit_cpu, 3.0)
 
 
 @test(mark="fast")

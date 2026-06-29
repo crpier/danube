@@ -24,6 +24,7 @@ from danube.db import open_database
 from danube.db.models import Job, Pipeline, Team
 from danube.domain.enums import JobStatus, TriggerType
 from danube.domain.lifecycle import InvalidTransition
+from danube.domain.limits import DEFAULT_CEILING, ResourceCeiling, ResourceRequest
 from danube.domain.runner_types import JobHandle, StartJobRequest
 from danube.orchestrator import JobOrchestrator, LogWriter, LogWriterError
 from danube.rpc import ControlPlane
@@ -77,7 +78,9 @@ async def _seed_pipeline(
 
 
 @asynccontextmanager
-async def _make_env(runner: FakeRunner) -> AsyncGenerator[Env]:
+async def _make_env(
+    runner: FakeRunner, *, limits: ResourceCeiling = DEFAULT_CEILING
+) -> AsyncGenerator[Env]:
     data_dir = Path(tempfile.mkdtemp(prefix="danube-orch-"))
     db = await open_database(":memory:")
     try:
@@ -91,7 +94,7 @@ async def _make_env(runner: FakeRunner) -> AsyncGenerator[Env]:
             secret_service=SecretService(db, SecretCipher(generate_key())),
         )
         orchestrator = JobOrchestrator(
-            runner, db, data_dir, control_plane, rpc_address=RPC_ADDRESS
+            runner, db, data_dir, control_plane, rpc_address=RPC_ADDRESS, limits=limits
         )
         yield Env(db, orchestrator, runner, data_dir)
     finally:
@@ -162,6 +165,51 @@ async def test_pre_migration_null_egress_starts_default_denied() -> None:
     request = start.args[0]
     assert isinstance(request, StartJobRequest)
     assert_eq(request.egress, False)
+
+
+@test(mark="medium")
+async def test_requested_limits_flow_into_start_request() -> None:
+    # The pipeline's persisted limit columns reach the runner's StartJobRequest;
+    # the runner (not the orchestrator) clamps them against the ceiling.
+    e = await load_fixture(env())
+    async with e.db.transaction() as tx:
+        _ = await tx.execute(
+            update(Pipeline)
+            .set(Pipeline.limit_cpu.to(1.5))
+            .set(Pipeline.limit_memory_mb.to(1024))
+            .set(Pipeline.limit_pids.to(256))
+            .where(Pipeline.id.eq("p1"))
+        )
+    created = await e.orchestrator.create_job("p1", TriggerType.MANUAL)
+
+    _ = await e.orchestrator.run_job(created.id)
+
+    start = next(c for c in e.runner.calls if c.method == "start_job")
+    request = start.args[0]
+    assert isinstance(request, StartJobRequest)
+    assert_eq(request.limits, ResourceRequest(cpu=1.5, memory_mb=1024, pids=256))
+
+
+@test(mark="medium")
+async def test_job_timeout_is_clamped_to_ceiling() -> None:
+    # The orchestrator enforces the wall-clock timeout, so it clamps the pipeline's
+    # `max_duration_seconds` to the ceiling max before building the request.
+    ceiling = ResourceCeiling(max=ResourceRequest(timeout_seconds=900))
+    async with _make_env(FakeRunner(), limits=ceiling) as e:
+        async with e.db.transaction() as tx:
+            _ = await tx.execute(
+                update(Pipeline)
+                .set(Pipeline.max_duration_seconds.to(7200))
+                .where(Pipeline.id.eq("p1"))
+            )
+        created = await e.orchestrator.create_job("p1", TriggerType.MANUAL)
+
+        _ = await e.orchestrator.run_job(created.id)
+
+        start = next(c for c in e.runner.calls if c.method == "start_job")
+        request = start.args[0]
+        assert isinstance(request, StartJobRequest)
+        assert_eq(request.max_duration_seconds, 900)
 
 
 @test(mark="medium")

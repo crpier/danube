@@ -163,4 +163,18 @@ MIGRATIONS: dict[str, str] = {
     # Pre-existing rows read back NULL, which the Blueprint reconcile overwrites on
     # the next apply; `0` means default-deny.
     "0027_pipelines_add_egress": 'ALTER TABLE "pipelines" ADD COLUMN "egress" INTEGER',
+    # Configurable per-pipeline job resource limits (#53). Three plain nullable
+    # ADD COLUMNs: the model declares them `nullable=True` with no client default,
+    # so no server DEFAULT is needed and strict verify stays clean. NULL means the
+    # pipeline requested nothing for that dimension and the runner uses the server
+    # Resource Ceiling default. CPU is REAL (fractional cores); memory/pids INTEGER.
+    "0028_pipelines_add_limit_cpu": (
+        'ALTER TABLE "pipelines" ADD COLUMN "limit_cpu" REAL'
+    ),
+    "0029_pipelines_add_limit_memory_mb": (
+        'ALTER TABLE "pipelines" ADD COLUMN "limit_memory_mb" INTEGER'
+    ),
+    "0030_pipelines_add_limit_pids": (
+        'ALTER TABLE "pipelines" ADD COLUMN "limit_pids" INTEGER'
+    ),
 }

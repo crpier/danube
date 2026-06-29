@@ -19,6 +19,7 @@ from snektest import assert_eq, assert_raises, fixture, load_fixture, test
 from danube.db import open_database
 from danube.db.models import Job, Pipeline, RunnerState, Team
 from danube.domain.enums import JobStatus, TriggerType
+from danube.domain.limits import ResourceCeiling, ResourceRequest
 from danube.domain.runner_types import (
     BuildImageRequest,
     ExecStepRequest,
@@ -469,6 +470,67 @@ async def test_start_job_with_egress_attaches_outbound_network() -> None:
     pod_spec = _by_method(podman.calls, "create_pod").payload["spec"]
     assert isinstance(pod_spec, PodSpec)
     assert_eq(tuple(pod_spec.networks), (DEFAULT_OUTBOUND_NETWORK,))
+
+
+_CEILING = ResourceCeiling(
+    default=ResourceRequest(cpu=2.0, memory_mb=2048, pids=512),
+    max=ResourceRequest(cpu=4.0, memory_mb=4096, pids=1024),
+)
+
+
+@test(mark="fast")
+async def test_start_job_clamps_requested_limits_to_ceiling() -> None:
+    # A pipeline requesting above the operator ceiling gets clamped to `max`; the
+    # cgroup limits on both containers reflect the clamped CPU/memory/pids.
+    podman = FakePodman()
+    data = load_fixture(data_dir())
+    runner = LocalContainerRunner(
+        podman, data, config=LocalRunnerConfig(limits=_CEILING)
+    )
+
+    _ = await runner.start_job(
+        StartJobRequest(
+            job_id="j1",
+            pipeline_id="p1",
+            worker_image="busybox:latest",
+            limits=ResourceRequest(cpu=16.0, memory_mb=65536, pids=99999),
+        )
+    )
+
+    for call in [c for c in podman.calls if c.method == "create_container"]:
+        spec = _spec(call)
+        assert spec.limits is not None
+        # 4 CPUs at the 100ms accounting period; 4096 MiB in bytes; 1024 pids.
+        assert_eq(spec.limits.cpu_quota, 400_000)
+        assert_eq(spec.limits.cpu_period, 100_000)
+        assert_eq(spec.limits.memory_bytes, 4096 * 1024**2)
+        assert_eq(spec.limits.pids_limit, 1024)
+
+
+@test(mark="fast")
+async def test_start_job_honors_request_within_ceiling() -> None:
+    # A request below the ceiling is applied verbatim (here only CPU is requested,
+    # so memory/pids fall back to the ceiling default).
+    podman = FakePodman()
+    data = load_fixture(data_dir())
+    runner = LocalContainerRunner(
+        podman, data, config=LocalRunnerConfig(limits=_CEILING)
+    )
+
+    _ = await runner.start_job(
+        StartJobRequest(
+            job_id="j1",
+            pipeline_id="p1",
+            worker_image="busybox:latest",
+            limits=ResourceRequest(cpu=1.0),
+        )
+    )
+
+    spec = _spec(next(c for c in podman.calls if c.method == "create_container"))
+    assert spec.limits is not None
+    assert_eq(spec.limits.cpu_quota, 100_000)  # 1 CPU honored
+    assert_eq(spec.limits.memory_bytes, 2048 * 1024**2)  # ceiling default
+    assert_eq(spec.limits.pids_limit, 512)  # ceiling default
 
 
 @test(mark="fast")

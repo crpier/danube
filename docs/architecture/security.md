@@ -42,7 +42,7 @@ Job containers should be created with secure defaults:
 - dropped capabilities by default
 - read-only root filesystem where practical
 - writable per-job `/workspace` only, plus explicit tmpfs scratch (`/tmp`, `/run`, `/var/tmp`) so build tooling that writes to `/tmp` still works
-- explicit CPU, memory, and pids limits
+- explicit CPU, memory, and pids limits, clamped to an operator Resource Ceiling (`[limits]`) so a Blueprint request can never exceed the configured cap
 - automatic cleanup after completion or failure
 
 The Worker image is user-controlled, so Danube must assume Worker code is untrusted.
