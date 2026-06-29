@@ -21,3 +21,6 @@ pnpm-debug.log*
 
 .env
 .env.*
+
+# Local dev runtime dir (DANUBE_DATA_DIR / DANUBE_CONFIG_PATH default target)
+.danube/

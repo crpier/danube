@@ -92,6 +92,7 @@ traces_enabled = false
 export DANUBE_BIND_ADDRESS="0.0.0.0:8080"
 export DANUBE_RPC_ADDRESS="127.0.0.1:9000"
 export DANUBE_DATA_DIR="/var/lib/danube"
+export DANUBE_CONFIG_PATH="/etc/danube/danube.toml"
 export DANUBE_CONFIG_REPO_URL="git@github.com:myorg/danube-blueprint.git"
 export DANUBE_CONFIG_REPO_BRANCH="main"
 export DANUBE_RUNNER_RUNTIME="podman"
@@ -106,6 +107,25 @@ export DANUBE_AUTH_LEEWAY_SECONDS="0"
 ```
 
 Environment variables override config file values.
+
+`DANUBE_DATA_DIR` and `DANUBE_CONFIG_PATH` also set the default paths used by the
+CLI itself: `danube init` writes the data directory and `danube.toml` there, and
+`danube master` reads the config from `DANUBE_CONFIG_PATH` when `--config` is
+omitted. Explicit `--data-dir`/`--config` flags still win over the environment.
+
+### Local development
+
+To keep every runtime file in a single project-local directory (avoiding the
+default `/var/lib/danube` and `/etc/danube`, which require root):
+
+```bash
+export DANUBE_DATA_DIR=.danube
+export DANUBE_CONFIG_PATH=.danube/danube.toml
+danube init        # scaffolds .danube/ and .danube/danube.toml
+danube master      # reads .danube/danube.toml
+```
+
+The `.danube/` directory is git-ignored.
 
 ## Configuration Loading Order
 
