@@ -9,6 +9,10 @@ control-plane operations:
     await danube.artifacts.upload("dist/app.tar.gz", name="app-bundle")
     await danube.status.report("success")
 
+The read-only `context` namespace carries the run metadata the Master plumbs in
+(`danube.context.sha` / `.branch` / `.pipeline` / `.trigger_type`), so a pipeline
+can disambiguate builds without an extra RPC.
+
 Every command runs in a fresh Worker shell (see `StepApi`). On the Coordinator
 image this package is published as the top-level ``danube`` distribution; in this
 monorepo it lives at `danube.sdk` alongside the Master.
@@ -17,6 +21,7 @@ monorepo it lives at `danube.sdk` alongside the Master.
 from danube.sdk.client import (
     ArtifactsApi,
     DanubeClient,
+    JobContext,
     RpcClient,
     RpcError,
     SecretsApi,
@@ -30,6 +35,7 @@ from danube.sdk.client import (
 __all__ = [
     "ArtifactsApi",
     "DanubeClient",
+    "JobContext",
     "RpcClient",
     "RpcError",
     "SecretsApi",

@@ -126,6 +126,35 @@ Every job gets a private workspace directory under the Danube data directory, mo
 - Artifacts must be uploaded before job cleanup.
 - Workspace is deleted after job completion unless retention/debug settings preserve it.
 
+## Job Context
+
+Run metadata is exposed read-only on the client as `danube.context`. The Master
+plumbs it into the Coordinator environment when it launches the entrypoint, so a
+pipeline can disambiguate builds (e.g. tag an image with the commit sha) without
+an RPC round-trip:
+
+```python
+async def pipeline(danube):
+    ctx = danube.context
+    tag = ctx.sha or "latest"
+    await danube.step.run(f"docker build -t myapp:{tag} .")
+```
+
+`JobContext` fields:
+
+| Field          | Source                          | Notes                                              |
+| -------------- | ------------------------------- | -------------------------------------------------- |
+| `job_id`       | `DANUBE_JOB_ID`                 | The job's UUID.                                    |
+| `pipeline`     | `DANUBE_PIPELINE`               | The pipeline name.                                 |
+| `trigger_type` | `DANUBE_TRIGGER_TYPE`           | `webhook`, `cron`, or `manual`.                    |
+| `trigger_ref`  | `DANUBE_TRIGGER_REF`            | Raw `branch/sha` ref, or `None` (e.g. manual run). |
+| `branch`       | derived from `trigger_ref`      | `None` when there is no ref.                       |
+| `sha`          | derived from `trigger_ref`      | Final `/`-separated segment; `None` with no ref.   |
+
+`branch`/`sha` split `trigger_ref` on the last `/`, so a branch name containing
+slashes (`feature/foo`) is preserved. A manual job carries no Git ref, so
+`trigger_ref`, `branch`, and `sha` are all `None`.
+
 ## Secrets Access
 
 Secrets are not injected into container manifests by default. They are fetched on demand:

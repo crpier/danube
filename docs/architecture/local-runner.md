@@ -104,7 +104,10 @@ The runner interface should expose Danube concepts, not Podman concepts.
 `start_job` creates the pod with both containers idling. The Master then opens the
 job's RPC session and calls `start_coordinator`, which launches the Coordinator
 entrypoint (`python -m danube.coordinator`) with the SDK connection environment
-(`DANUBE_RPC_ADDRESS`, `DANUBE_JOB_ID`, `DANUBE_RPC_TOKEN`). `wait_for_coordinator`
+(`DANUBE_RPC_ADDRESS`, `DANUBE_JOB_ID`, `DANUBE_RPC_TOKEN`) plus the run-metadata
+variables behind the `danube.context` surface (`DANUBE_PIPELINE`,
+`DANUBE_TRIGGER_TYPE`, and `DANUBE_TRIGGER_REF` when the job has a Git ref).
+`wait_for_coordinator`
 blocks until that process exits and reports its `CoordinatorExit` (the exit code is
 the crash signal when no terminal `/rpc/report-status` arrived). In the
 `LocalContainerRunner` these are a Podman exec of the entrypoint in the Coordinator
