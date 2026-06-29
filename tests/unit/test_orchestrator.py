@@ -14,9 +14,10 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import anyio
-from snekql.sqlite import Database, Fetched, insert, select
+from snekql.sqlite import Database, Fetched, insert, select, update
 from snektest import assert_eq, assert_raises, fixture, load_fixture, test
 
 from danube.db import open_database
@@ -136,6 +137,31 @@ async def test_clean_coordinator_exit_reaches_success() -> None:
         e.runner.method_names,
         ["start_job", "start_coordinator", "wait_for_coordinator", "cleanup_job"],
     )
+
+
+@test(mark="medium")
+async def test_pre_migration_null_egress_starts_default_denied() -> None:
+    # A pipeline row created before migration 0027 reads `egress` back as NULL.
+    # The job must still start, default-denied (egress False), not crash building
+    # a `StartJobRequest` whose `egress` field is a non-optional `bool`.
+    e = await load_fixture(env())
+    async with e.db.transaction() as tx:
+        # Force the out-of-contract NULL a real pre-0027 row reads back as; the
+        # `bool` column type cannot express it, so `cast` it deliberately here.
+        _ = await tx.execute(
+            update(Pipeline)
+            .set(Pipeline.egress.to(cast("bool", None)))
+            .where(Pipeline.id.eq("p1"))
+        )
+    created = await e.orchestrator.create_job("p1", TriggerType.MANUAL)
+
+    job = await e.orchestrator.run_job(created.id)
+
+    assert_eq(job.status, JobStatus.SUCCESS)
+    start = next(c for c in e.runner.calls if c.method == "start_job")
+    request = start.args[0]
+    assert isinstance(request, StartJobRequest)
+    assert_eq(request.egress, False)
 
 
 @test(mark="medium")
