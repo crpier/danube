@@ -231,6 +231,7 @@ class JobOrchestrator:
                             pipeline_id=job.pipeline_id,
                             worker_image=pipeline.worker_image,
                             max_duration_seconds=pipeline.max_duration_seconds,
+                            egress=pipeline.egress,
                         )
                     ),
                 )

@@ -108,3 +108,33 @@ if socket_available():
         finally:
             await runner.cleanup_job(handle)
             shutil.rmtree(data_dir, ignore_errors=True)
+
+    @test(mark="slow")
+    async def test_egress_opt_in_allows_outbound_on_real_podman() -> None:
+        # The acceptance counterpart to the default-deny check above (#52): a job
+        # whose pipeline opted in with `egress: true` lands on a normal outbound
+        # network, so the same `wget` that is blocked by default now succeeds.
+        # Needs real outbound connectivity on the host; it skips with the rest of
+        # this module when no Podman socket is present.
+        client = await load_fixture(podman_client())
+        adapter = PodmanAdapter(client)
+        data_dir = Path(tempfile.mkdtemp(prefix="danube-egress-"))
+        config = LocalRunnerConfig(coordinator_image=WORKER_IMAGE)
+        runner = LocalContainerRunner(adapter, data_dir, config=config)
+        request = StartJobRequest(
+            job_id="egress-1", pipeline_id="p1", worker_image=WORKER_IMAGE, egress=True
+        )
+
+        handle = await runner.start_job(request)
+        try:
+            # Target a literal IP so success proves a reachable outbound path, not a
+            # working DNS resolver; exit 127 (missing `wget`) would be a test-setup
+            # failure, not opened egress, so it is not treated as success.
+            egress = await runner.exec_step(
+                handle,
+                ExecStepRequest(command="wget -T 10 -q -O - http://1.1.1.1/"),
+            )
+            assert_eq(egress.exit_code, 0)
+        finally:
+            await runner.cleanup_job(handle)
+            shutil.rmtree(data_dir, ignore_errors=True)

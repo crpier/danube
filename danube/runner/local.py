@@ -13,7 +13,9 @@ network/PID/IPC namespaces, all capabilities dropped, `no-new-privileges`, CPU/
 memory/pids limits, only the per-job workspace mounted, and a read-only root
 filesystem with writable tmpfs scratch (`/tmp`, `/run`, `/var/tmp`) so real build
 tooling still works. Egress is denied by default by attaching the pod to an `internal`
-Podman network (`docs/architecture/networking.md`); allowlisted egress through a
+Podman network (`docs/architecture/networking.md`); a pipeline opts the whole job into
+outbound access with `egress: true` in its Blueprint, which attaches a normal outbound
+network instead (`docs/adr/0002-default-deny-egress.md`). Allowlisted egress through a
 proxy is handled separately.
 
 `runner_state` rows are written for the pod and both containers when a `Database`
@@ -109,9 +111,15 @@ DEFAULT_LIMITS = ResourceLimits(
     pids_limit=512,
 )
 
-# Internal Podman network the job pod attaches to: no route to the internet, so
-# egress is denied by default.
+# Internal Podman network the job pod attaches to by default: no route to the
+# internet, so egress is denied unless a pipeline opts in.
 DEFAULT_EGRESS_NETWORK = "danube-egress"
+
+# Outbound Podman network a job pod attaches to instead when its pipeline sets
+# `egress: true` in the Blueprint: a normal (non-`internal`) network with a route
+# to the internet (`docs/adr/0002-default-deny-egress.md`). Egress is a job-level
+# posture, never per-step.
+DEFAULT_OUTBOUND_NETWORK = "danube-egress-allow"
 
 DEFAULT_COORDINATOR_IMAGE = "localhost/danube-coordinator:latest"
 # Keep-alive command so the containers stay up for exec; the real Worker
@@ -161,7 +169,11 @@ class LocalRunnerConfig:
     """
 
     coordinator_image: str = DEFAULT_COORDINATOR_IMAGE
+    # `egress_network` is the default-deny (`internal`) network; `outbound_network`
+    # is the normal network a job pod uses instead when its pipeline opts into
+    # egress (`docs/adr/0002-default-deny-egress.md`).
     egress_network: str = DEFAULT_EGRESS_NETWORK
+    outbound_network: str = DEFAULT_OUTBOUND_NETWORK
     limits: ResourceLimits = DEFAULT_LIMITS
     # How to launch the Coordinator pipeline, plus extra env and read-only mounts
     # the Coordinator container needs (e.g. the `danube` package and `PYTHONPATH`
@@ -191,6 +203,7 @@ class LocalContainerRunner:
         self._db = db
         self._coordinator_image = config.coordinator_image
         self._egress_network = config.egress_network
+        self._outbound_network = config.outbound_network
         self._limits = config.limits
         self._coordinator_command = config.coordinator_command
         self._coordinator_env = dict(config.coordinator_env)
@@ -210,8 +223,12 @@ class LocalContainerRunner:
         )
 
         await self._ensure_images(request.worker_image)
+        # Default-deny egress: attach the `internal` (no-route) network unless the
+        # pipeline opted in, in which case attach a normal outbound network
+        # instead (`docs/adr/0002-default-deny-egress.md`).
+        network = self._outbound_network if request.egress else self._egress_network
         await self._podman.ensure_network(
-            self._egress_network, internal=True, labels=dict(MANAGED_SELECTOR)
+            network, internal=not request.egress, labels=dict(MANAGED_SELECTOR)
         )
 
         name = pod_name(job_id)
@@ -219,7 +236,7 @@ class LocalContainerRunner:
             PodSpec(
                 name=name,
                 labels=self._labels(request, RESOURCE_POD),
-                networks=(self._egress_network,),
+                networks=(network,),
             )
         )
 

@@ -31,6 +31,7 @@ from danube.runner.base import Runner
 from danube.runner.local import (
     DEFAULT_EGRESS_NETWORK,
     DEFAULT_LIMITS,
+    DEFAULT_OUTBOUND_NETWORK,
     LABEL_JOB_ID,
     LABEL_MANAGED,
     LABEL_PIPELINE_ID,
@@ -446,6 +447,28 @@ async def test_start_job_container_body_carries_isolation_profile() -> None:
     pod_spec = _by_method(podman.calls, "create_pod").payload["spec"]
     assert isinstance(pod_spec, PodSpec)
     assert_eq(tuple(pod_spec.networks), (DEFAULT_EGRESS_NETWORK,))
+
+
+@test(mark="fast")
+async def test_start_job_with_egress_attaches_outbound_network() -> None:
+    # A pipeline that opts into egress (`egress: true`) puts the job pod on a
+    # normal outbound network (`internal=False`) instead of the default-deny one.
+    podman = FakePodman()
+    data = load_fixture(data_dir())
+    runner = LocalContainerRunner(podman, data)
+
+    _ = await runner.start_job(
+        StartJobRequest(
+            job_id="j1", pipeline_id="p1", worker_image="busybox:latest", egress=True
+        )
+    )
+
+    network = _by_method(podman.calls, "ensure_network")
+    assert_eq(network.payload["internal"], False)
+    assert_eq(network.payload["name"], DEFAULT_OUTBOUND_NETWORK)
+    pod_spec = _by_method(podman.calls, "create_pod").payload["spec"]
+    assert isinstance(pod_spec, PodSpec)
+    assert_eq(tuple(pod_spec.networks), (DEFAULT_OUTBOUND_NETWORK,))
 
 
 @test(mark="fast")

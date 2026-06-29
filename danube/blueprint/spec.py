@@ -86,6 +86,11 @@ class PipelineSpec(BaseModel):
     script: str = "danubefile.py"
     max_duration_seconds: int = 3600
     workspace_size_gb: int = 5
+    # Job-level outbound network posture. Default-deny: the job pod attaches to an
+    # `internal` (no-egress) network unless a pipeline opts in here, which attaches
+    # it to a normal outbound network instead. Never per-step
+    # (`docs/adr/0002-default-deny-egress.md`).
+    egress: bool = False
     worker: WorkerSpec
     permissions: list[PermissionSpec] = Field(default_factory=list[PermissionSpec])
 

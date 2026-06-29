@@ -100,6 +100,16 @@ carve-out: a non-`internal` control network the pod can use to reach the Master 
 path while the Worker's general egress stays denied — is the job of the egress-proxy
 work and is out of scope here.
 
+### Per-pipeline egress opt-in
+
+Egress is denied by default but a pipeline can opt the whole job into outbound access
+with `egress: true` in its Blueprint (`docs/adr/0002-default-deny-egress.md`). The
+runner reads this off the job's `StartJobRequest`: when set, it attaches the pod to a
+normal outbound network (`danube-egress-allow`) instead of the default-deny `internal`
+one (`danube-egress`). Egress is a job-level posture, never per-step, because the two
+containers share one pod network namespace. The grant is binary deny/allow today; a
+filtered allowlist needs the egress proxy above.
+
 ## Egress Control
 
 Danube supports controlled egress for builds that need package registries, Git forges, or deployment targets.

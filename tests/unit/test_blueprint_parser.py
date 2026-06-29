@@ -46,17 +46,21 @@ def _pipeline(
     *,
     triggers: list[dict[str, Any]] | None = None,
     permissions: list[dict[str, Any]] | None = None,
+    egress: bool | None = None,
 ) -> dict[str, Any]:
+    spec: dict[str, Any] = {
+        "repository": f"https://example.test/{name}.git",
+        "worker": {"image": "node:20-alpine"},
+        "triggers": triggers or [],
+        "permissions": permissions or [],
+    }
+    if egress is not None:
+        spec["egress"] = egress
     return {
         "apiVersion": API,
         "kind": "Pipeline",
         "metadata": {"name": name, "team": team},
-        "spec": {
-            "repository": f"https://example.test/{name}.git",
-            "worker": {"image": "node:20-alpine"},
-            "triggers": triggers or [],
-            "permissions": permissions or [],
-        },
+        "spec": spec,
     }
 
 
@@ -110,6 +114,25 @@ def test_valid_blueprint_parses_all_documents() -> None:
     assert_eq(len(blueprint.teams), 1)
     assert_eq(len(blueprint.pipelines), 1)
     assert_eq(blueprint.pipelines[0].metadata.team, "engineering")
+
+
+@test(mark="fast")
+def test_pipeline_egress_defaults_off_and_parses_when_set() -> None:
+    with _checkout() as root:
+        _write_blueprint(
+            root,
+            teams=[_team("engineering", [])],
+            pipelines=[
+                _pipeline("frontend", "engineering"),
+                _pipeline("deployer", "engineering", egress=True),
+            ],
+        )
+
+        blueprint = parse_blueprint(root)
+
+    by_name = {p.metadata.name: p for p in blueprint.pipelines}
+    assert_eq(by_name["frontend"].spec.egress, False)
+    assert_eq(by_name["deployer"].spec.egress, True)
 
 
 @test(mark="fast")

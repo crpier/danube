@@ -84,6 +84,11 @@ class Pipeline[S = Pending](sqlite.Model[S, "Pipeline[Fetched]"]):
         nullable=True, default=3600
     )
     workspace_size_gb: Pipeline.Col[int] = sqlite.Integer(nullable=True, default=5)
+    # Job-level egress posture (`docs/adr/0002-default-deny-egress.md`). DB-nullable
+    # for an ALTER-added column on an existing table, mirroring the
+    # `max_duration_seconds`/`workspace_size_gb` pattern: the non-optional `bool`
+    # value type is pinned to the client default, which always fills new rows.
+    egress: Pipeline.Col[bool] = sqlite.Integer(nullable=True, default=False)
     created_at: Pipeline.GenCol[datetime] = sqlite.Text(default=sqlite.CurrentTimestamp)
     updated_at: Pipeline.GenCol[datetime] = sqlite.Text(default=sqlite.CurrentTimestamp)
 
