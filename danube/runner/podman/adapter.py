@@ -404,12 +404,15 @@ def parse_push_stream(content: bytes) -> PushResult:
 
     Each line is a JSON object: `{"stream": "..."}` carries push progress and
     `{"error": "..."}` (or `errorDetail`) signals failure. The push succeeds when
-    no error record was seen. The manifest `digest` is read from an explicit
-    `{"digest": "..."}` record when present, otherwise from the first
-    ``sha256:<64-hex>`` token in the progress text (best-effort; empty if none).
-    Non-JSON or blank lines are tolerated so a partial trailing chunk never raises."""
+    no error record was seen. The manifest `digest` comes from an explicit
+    `{"digest": "..."}` record when present; otherwise it falls back to the *last*
+    ``sha256:<64-hex>`` token in the progress text. Last, not first: a push emits a
+    digest per blob before writing the manifest, so the manifest digest is the
+    final one — taking the first would report a blob digest instead. Non-JSON or
+    blank lines are tolerated so a partial trailing chunk never raises."""
     output = io.StringIO()
-    digest = ""
+    explicit_digest = ""
+    progress_digest = ""
     errored = False
     for raw in content.splitlines():
         line = raw.strip()
@@ -426,18 +429,21 @@ def parse_push_stream(content: bytes) -> PushResult:
         stream = record.get("stream")
         if isinstance(stream, str):
             _ = output.write(stream)
-            if not digest:
-                found = _DIGEST_RE.search(stream)
-                if found:
-                    digest = found.group(0)
+            found = _DIGEST_RE.findall(stream)
+            if found:
+                progress_digest = found[-1]
         explicit = record.get("digest")
         if isinstance(explicit, str) and explicit:
-            digest = explicit
+            explicit_digest = explicit
         error: object = record.get("error") or record.get("errorDetail")
         if error:
             errored = True
             _ = output.write(_error_text(error))
-    return PushResult(success=not errored, digest=digest, output=output.getvalue())
+    return PushResult(
+        success=not errored,
+        digest=explicit_digest or progress_digest,
+        output=output.getvalue(),
+    )
 
 
 def _registry_auth_header(auth: RegistryAuth) -> str:

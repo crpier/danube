@@ -283,6 +283,23 @@ def test_parse_push_stream_reads_digest_from_progress_text() -> None:
 
 
 @test(mark="fast")
+def test_parse_push_stream_progress_digest_prefers_manifest_over_blob() -> None:
+    # Without an explicit digest record, a blob digest precedes the manifest one in
+    # the progress text; the manifest (written last) must win.
+    blob = "sha256:" + "a" * 64
+    manifest = "sha256:" + "b" * 64
+    content = _ndjson(
+        {"stream": f"Copying blob {blob}\n"},
+        {"stream": f"Writing manifest to image destination\n{manifest}\n"},
+    )
+
+    result = parse_push_stream(content)
+
+    assert result.success is True
+    assert_eq(result.digest, manifest)
+
+
+@test(mark="fast")
 def test_parse_push_stream_failure_records_error() -> None:
     content = _ndjson(
         {"stream": "Getting image source signatures\n"},
