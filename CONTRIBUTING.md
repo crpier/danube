@@ -23,8 +23,9 @@
 
 ## Validation
 
-There is no CI yet, so validation is manual. Before opening or merging a PR, run
-the full gate from the repo root and keep it clean:
+CI (GitHub Actions, `.github/workflows/ci.yml`) runs this gate plus the frontend
+lint/build on every PR, but run it locally too. Before opening or merging a PR,
+run the full gate from the repo root and keep it clean:
 
 ```bash
 uv run ruff check .

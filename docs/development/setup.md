@@ -6,7 +6,7 @@
 - UV package manager
 - Git
 - Podman for runner integration tests
-- [Bun](https://bun.sh) 1.3+ only if working on the frontend
+- [Bun](https://bun.sh) 1.3.6+ only if working on the frontend (CI pins 1.3.6)
 
 ## Initial Setup
 
@@ -189,8 +189,8 @@ uv run python -m snektest tests/unit/
 uv run python -m snektest tests/integration/
 ```
 
-There is no CI yet; this gate is run manually until Danube can run its own
-pipelines. See [Testing Guide](./testing.md).
+CI (`.github/workflows/ci.yml`) runs this gate on every PR; run it locally too
+before pushing. See [Testing Guide](./testing.md).
 
 ## Common Development Tasks
 
