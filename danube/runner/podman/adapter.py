@@ -132,13 +132,17 @@ class BuildSpec:
     """A host-side image build: a build context directory, a Containerfile path
     within it, and the tag to apply.
 
-    `network` is the networking mode for `RUN` instructions; Danube defaults it to
-    `none` so build steps cannot reach the network (`docs/adr/0001-host-side-image-build.md`)."""
+    `build_args` populate the Containerfile's `ARG` instructions (not secret-safe).
+    `network` enables networking for `RUN` instructions; Danube defaults it off so
+    build steps cannot reach the network (`docs/adr/0001-host-side-image-build.md`).
+    `target` selects a stage to build in a multi-stage Containerfile."""
 
     context_path: str
     tag: str
     dockerfile: str = "Dockerfile"
-    network: str = "none"
+    build_args: Mapping[str, str] = field(default_factory=dict[str, str])
+    network: bool = False
+    target: str | None = None
 
 
 # --- Results (Podman responses -> Danube dataclasses) -----------------------
@@ -534,15 +538,23 @@ class PodmanAdapter:
 
     async def build_image(self, spec: BuildSpec) -> BuildResult:
         # `/build` takes the context as a tar request body and streams progress as
-        # newline-delimited JSON; `networkmode=none` disables networking for `RUN`.
-        # A failed build still returns 200 with an `error` record in the stream, so
-        # success is decided by the parser, not the HTTP status.
+        # newline-delimited JSON; `networkmode=none` disables networking for `RUN`
+        # unless the build opts in. A failed build still returns 200 with an
+        # `error` record in the stream, so success is decided by the parser, not
+        # the HTTP status.
         archive = await anyio.to_thread.run_sync(tar_build_context, spec.context_path)
-        params = {
+        params: dict[str, str] = {
             "dockerfile": spec.dockerfile,
             "t": spec.tag,
-            "networkmode": spec.network,
+            # Egress denied by default (ADR-0001); opting in lets RUN use the
+            # default network namespace.
+            "networkmode": "default" if spec.network else "none",
         }
+        if spec.build_args:
+            # libpod expects `buildargs` as a JSON-encoded object string.
+            params["buildargs"] = json.dumps(dict(spec.build_args))
+        if spec.target:
+            params["target"] = spec.target
         method = "POST"
         path = f"{self._prefix}/build"
         async with self._client.stream(

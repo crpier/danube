@@ -462,7 +462,34 @@ async def test_build_image_drives_host_podman_build() -> None:
     assert_eq(spec.context_path, "/ws/build")
     assert_eq(spec.tag, "app:abc")
     assert_eq(spec.dockerfile, "Dockerfile")
-    assert_eq(spec.network, "none")
+    assert_eq(spec.network, False)
+    assert_eq(dict(spec.build_args), {})
+    assert_eq(spec.target, None)
+
+
+@test(mark="fast")
+async def test_build_image_threads_build_args_network_and_target() -> None:
+    podman = FakePodman()
+    podman.build_result = BuildResult(success=True, image_id="sha256:built", output="")
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()))
+
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+    _ = await runner.build_image(
+        handle,
+        BuildImageRequest(
+            tag="app:abc",
+            context_path="/ws/build",
+            build_args={"VERSION": "1.2.3"},
+            network=True,
+            target="runtime",
+        ),
+    )
+
+    spec = _by_method(podman.calls, "build_image").payload["spec"]
+    assert isinstance(spec, BuildSpec)
+    assert_eq(dict(spec.build_args), {"VERSION": "1.2.3"})
+    assert_eq(spec.network, True)
+    assert_eq(spec.target, "runtime")
 
 
 @test(mark="fast")

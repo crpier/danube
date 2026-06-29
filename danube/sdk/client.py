@@ -256,20 +256,28 @@ class ImagesApi:
     def __init__(self, client: RpcClient) -> None:
         self._client = client
 
-    async def build(
+    async def build(  # noqa: PLR0913 - build options are idiomatic keyword args
         self,
         tag: str,
         *,
         context: str = ".",
         dockerfile: str = "Dockerfile",
         name: str | None = None,
+        build_args: dict[str, str] | None = None,
+        network: bool = False,
+        target: str | None = None,
     ) -> BuiltImage:
         """Build and tag an image from ``context`` (a workspace-relative directory)
         using ``dockerfile`` within it, and return the `BuiltImage`.
 
+        ``build_args`` populate the Containerfile's ``ARG`` instructions; they are
+        **not** secret-safe, so never pass secrets through them. ``RUN`` networking
+        is denied by default (`docs/adr/0001-host-side-image-build.md`); pass
+        ``network=True`` to opt in. ``target`` selects a stage in a multi-stage
+        Containerfile.
+
         A build whose Dockerfile fails raises `BuildError`; the failed `build` step
-        is still recorded. `build_args` and `--secret` mounts are a later slice, so
-        do not pass secrets through the build context."""
+        is still recorded."""
         data = await self._client.post(
             "/rpc/build-image",
             {
@@ -277,6 +285,9 @@ class ImagesApi:
                 "context": context,
                 "dockerfile": dockerfile,
                 "name": name,
+                "build_args": build_args or {},
+                "network": network,
+                "target": target,
             },
         )
         if not data.get("success"):

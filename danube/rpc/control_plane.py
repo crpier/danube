@@ -293,6 +293,9 @@ class ControlPlane:
                         tag=request.tag,
                         context_path=str(context_path),
                         dockerfile=request.dockerfile,
+                        build_args=request.build_args,
+                        network=request.network,
+                        target=request.target,
                     ),
                 )
             scrubbed = scrub_secrets(result.output, secret_values)

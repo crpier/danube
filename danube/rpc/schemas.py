@@ -50,12 +50,18 @@ class BuildImageRequest(_Request):
     `context` is a build-context directory relative to the job workspace and
     `dockerfile` is the Containerfile path within it; both default to the common
     case. `tag` is raw and user-controlled (pipelines disambiguate with the Job
-    Context, e.g. the commit sha)."""
+    Context, e.g. the commit sha). `build_args` populate the Dockerfile's `ARG`
+    instructions (not secret-safe). `network` opts `RUN` instructions into
+    networking, denied by default per `docs/adr/0001-host-side-image-build.md`.
+    `target` selects a stage in a multi-stage Containerfile."""
 
     tag: NonEmptyStr
     context: NonEmptyStr = "."
     dockerfile: NonEmptyStr = "Dockerfile"
     name: str | None = None
+    build_args: dict[str, str] = Field(default_factory=dict)
+    network: bool = False
+    target: str | None = None
 
 
 class BuildImageResponse(BaseModel):

@@ -12,11 +12,14 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+import httpx
 from snektest import assert_eq, test
 
 from danube.runner.podman import Mount, ResourceLimits
 from danube.runner.podman.adapter import (
+    BuildSpec,
     ContainerSpec,
+    PodmanAdapter,
     _container_body,
     demultiplex_stream,
     parse_build_stream,
@@ -194,6 +197,56 @@ def test_tar_build_context_packs_dockerfile_at_root() -> None:
     # default `dockerfile=Dockerfile` resolves it.
     assert "Dockerfile" in names
     assert "src/app.py" in names
+
+
+async def _build_with(spec: BuildSpec) -> httpx.QueryParams:
+    """Run `PodmanAdapter.build_image` against a mock transport and return the
+    query params libpod received."""
+    seen: list[httpx.QueryParams] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params)
+        return httpx.Response(200, content=_ndjson({"aux": {"ID": "sha256:ok"}}))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://podman"
+    ) as client:
+        adapter = PodmanAdapter(client)
+        result = await adapter.build_image(spec)
+    assert result.success is True
+    return seen[0]
+
+
+@test(mark="fast")
+async def test_build_image_denies_network_by_default() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        (Path(raw) / "Dockerfile").write_text("FROM scratch\n")
+        params = await _build_with(BuildSpec(context_path=raw, tag="app:1"))
+
+    # Egress denied by default per ADR-0001; no build args or target are sent.
+    assert_eq(params.get("networkmode"), "none")
+    assert "buildargs" not in params
+    assert "target" not in params
+
+
+@test(mark="fast")
+async def test_build_image_sends_build_args_network_and_target() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        (Path(raw) / "Dockerfile").write_text("FROM scratch\n")
+        params = await _build_with(
+            BuildSpec(
+                context_path=raw,
+                tag="app:1",
+                build_args={"VERSION": "1.2.3"},
+                network=True,
+                target="runtime",
+            )
+        )
+
+    assert_eq(params.get("networkmode"), "default")
+    assert_eq(json.loads(params["buildargs"]), {"VERSION": "1.2.3"})
+    assert_eq(params.get("target"), "runtime")
 
 
 @test(mark="fast")

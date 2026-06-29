@@ -146,6 +146,101 @@ if socket_available():
         assert await adapter.image_exists(tag)
 
     @test(mark="slow")
+    async def test_build_image_build_arg_flows_into_run() -> None:
+        client = await load_fixture(podman_client())
+        data = load_fixture(data_dir())
+        runner = _make_runner(client, data)
+        context = data / "ctx-args"
+        context.mkdir(parents=True)
+        # `ARG` is consumed by a `RUN echo`, which needs no network, so the value
+        # surfaces in the build output proving `build_args` reached the build.
+        (context / "Dockerfile").write_text(
+            f'FROM {BUSYBOX_IMAGE}\nARG GREETING\nRUN echo "GREETING=$GREETING"\n'
+        )
+        tag = f"localhost/danube-it-{uuid.uuid4().hex[:12]}:latest"
+        handle = JobHandle(job_id="build-args", pod_id="none", workspace_path=str(data))
+
+        result = await runner.build_image(
+            handle,
+            BuildImageRequest(
+                tag=tag,
+                context_path=str(context),
+                build_args={"GREETING": "hello-from-arg"},
+            ),
+        )
+
+        assert result.success is True, result.output
+        assert "GREETING=hello-from-arg" in result.output
+
+    @test(mark="slow")
+    async def test_build_run_egress_denied_by_default() -> None:
+        client = await load_fixture(podman_client())
+        data = load_fixture(data_dir())
+        runner = _make_runner(client, data)
+        context = data / "ctx-no-net"
+        context.mkdir(parents=True)
+        # A `RUN` that reaches the internet must fail under the default deny.
+        (context / "Dockerfile").write_text(
+            f"FROM {BUSYBOX_IMAGE}\nRUN wget -T 3 -q -O /dev/null http://1.1.1.1\n"
+        )
+        tag = f"localhost/danube-it-{uuid.uuid4().hex[:12]}:latest"
+        handle = JobHandle(
+            job_id="build-nonet", pod_id="none", workspace_path=str(data)
+        )
+
+        result = await runner.build_image(
+            handle, BuildImageRequest(tag=tag, context_path=str(context))
+        )
+
+        assert result.success is False, "RUN reached the internet under default deny"
+
+    @test(mark="slow")
+    async def test_build_run_egress_allowed_with_network_opt_in() -> None:
+        client = await load_fixture(podman_client())
+        data = load_fixture(data_dir())
+        runner = _make_runner(client, data)
+        context = data / "ctx-net"
+        context.mkdir(parents=True)
+        (context / "Dockerfile").write_text(
+            f"FROM {BUSYBOX_IMAGE}\nRUN wget -T 5 -q -O /dev/null http://1.1.1.1\n"
+        )
+        tag = f"localhost/danube-it-{uuid.uuid4().hex[:12]}:latest"
+        handle = JobHandle(job_id="build-net", pod_id="none", workspace_path=str(data))
+
+        result = await runner.build_image(
+            handle,
+            BuildImageRequest(tag=tag, context_path=str(context), network=True),
+        )
+
+        assert result.success is True, result.output
+
+    @test(mark="slow")
+    async def test_build_image_target_selects_stage() -> None:
+        client = await load_fixture(podman_client())
+        data = load_fixture(data_dir())
+        runner = _make_runner(client, data)
+        context = data / "ctx-target"
+        context.mkdir(parents=True)
+        # The `build` stage would fail (its RUN needs the network), so a successful
+        # build proves `target` stopped at the earlier `base` stage.
+        stages = [
+            f"FROM {BUSYBOX_IMAGE} AS base",
+            "RUN echo base-stage",
+            "FROM base AS build",
+            "RUN wget -T 3 -q -O /dev/null http://1.1.1.1",
+        ]
+        (context / "Dockerfile").write_text("\n".join(stages) + "\n")
+        tag = f"localhost/danube-it-{uuid.uuid4().hex[:12]}:latest"
+        handle = JobHandle(job_id="build-tgt", pod_id="none", workspace_path=str(data))
+
+        result = await runner.build_image(
+            handle,
+            BuildImageRequest(tag=tag, context_path=str(context), target="base"),
+        )
+
+        assert result.success is True, result.output
+
+    @test(mark="slow")
     async def test_health_reports_healthy_against_live_socket() -> None:
         client = await load_fixture(podman_client())
         data = load_fixture(data_dir())
