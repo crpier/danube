@@ -346,7 +346,11 @@ class JobOrchestrator:
         resolved = self._limits.resolve(
             ResourceRequest(timeout_seconds=pipeline.max_duration_seconds)
         )
-        return resolved.timeout_seconds or pipeline.max_duration_seconds
+        return (
+            resolved.timeout_seconds
+            if resolved.timeout_seconds is not None
+            else pipeline.max_duration_seconds
+        )
 
     async def _timed_runner_op[T](self, operation: str, awaitable: Awaitable[T]) -> T:
         """Await a runner operation, recording its duration and success/error.
