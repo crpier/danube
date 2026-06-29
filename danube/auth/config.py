@@ -20,10 +20,12 @@ opt-in behaviour.
 
 from __future__ import annotations
 
-import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+from danube.configsource import flag_source, str_source
 
 Algorithm = Literal["HS256", "RS256"]
 
@@ -65,31 +67,35 @@ class AuthConfig:
             raise AuthConfigError(msg)
 
     @classmethod
-    def from_env(cls) -> AuthConfig | None:
-        """Build an `AuthConfig` from the environment, or `None` when disabled.
+    def from_sources(cls, table: Mapping[str, Any] | None = None) -> AuthConfig | None:
+        """Build from an `[auth]` table, with env vars overriding it.
 
-        Returns `None` unless ``DANUBE_AUTH_ENABLED`` is truthy, so the appliance
-        runs unauthenticated by default until an operator opts in. The public key
-        may be supplied inline (PEM text) or via a file path.
+        Returns `None` unless auth is enabled (``DANUBE_AUTH_ENABLED`` or
+        ``enabled`` in the table), so the appliance runs unauthenticated by
+        default until an operator opts in. The public key may be supplied inline
+        (PEM text) or via a file path.
         """
-        if os.environ.get(AUTH_ENABLED_ENV, "").strip().lower() not in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
+        table = table or {}
+        if not flag_source(AUTH_ENABLED_ENV, table, "enabled", default=False):
             return None
         algorithm: Algorithm = (
             "RS256"
-            if os.environ.get(AUTH_ALGORITHM_ENV, "HS256").upper() == "RS256"
+            if (
+                str_source(AUTH_ALGORITHM_ENV, table, "algorithm", default="HS256")
+                or ""
+            ).upper()
+            == "RS256"
             else "HS256"
         )
-        public_key = os.environ.get(AUTH_PUBLIC_KEY_ENV)
+        public_key = str_source(AUTH_PUBLIC_KEY_ENV, table, "public_key", default=None)
         if public_key is not None:
             candidate = Path(public_key)
             if candidate.is_file():
                 public_key = candidate.read_text(encoding="utf-8")
-        leeway_raw = os.environ.get(AUTH_LEEWAY_SECONDS_ENV, "0").strip()
+        leeway_raw = (
+            str_source(AUTH_LEEWAY_SECONDS_ENV, table, "leeway_seconds", default="0")
+            or "0"
+        ).strip()
         try:
             leeway_seconds = int(leeway_raw)
         except ValueError as error:
@@ -102,10 +108,17 @@ class AuthConfig:
             )
             raise AuthConfigError(msg)
         return cls(
-            issuer=os.environ.get(AUTH_ISSUER_ENV, ""),
-            audience=os.environ.get(AUTH_AUDIENCE_ENV, ""),
+            issuer=str_source(AUTH_ISSUER_ENV, table, "issuer", default="") or "",
+            audience=str_source(AUTH_AUDIENCE_ENV, table, "audience", default="") or "",
             algorithm=algorithm,
-            secret=os.environ.get(AUTH_HS256_SECRET_ENV),
+            secret=str_source(
+                AUTH_HS256_SECRET_ENV, table, "hs256_secret", default=None
+            ),
             public_key_pem=public_key,
             leeway_seconds=leeway_seconds,
         )
+
+    @classmethod
+    def from_env(cls) -> AuthConfig | None:
+        """Build an `AuthConfig` from the environment, or `None` when disabled."""
+        return cls.from_sources()

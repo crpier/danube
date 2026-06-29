@@ -10,7 +10,7 @@ dependencies = [
     "fastapi>=0.138.1",
     "httpx>=0.28.1",
     "pydantic>=2.13.4",
-    "snekql[aiosqlite]",
+    "snekql[aiosqlite]>=0.4.0",
     "uvicorn[standard]>=0.49.0",
 ]
 
@@ -22,13 +22,9 @@ dev = [
     "asgi-lifespan>=2.1.0",
     "pyright>=1.1.411",
     "ruff>=0.15.20",
-    "snektest",
+    "snektest>=0.16.0",
     "types-croniter>=6.2.2.20260518",
 ]
-
-[tool.uv.sources]
-snektest = { path = "../snektest", editable = true }
-snekql = { path = "../snekql", editable = true }
 
 [tool.ruff.lint.pyflakes]
 allowed-unused-imports = [

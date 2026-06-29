@@ -208,7 +208,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.138.1" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "snekql", extras = ["aiosqlite"], editable = "../snekql" },
+    { name = "snekql", extras = ["aiosqlite"], specifier = ">=0.4.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.49.0" },
 ]
 
@@ -217,7 +217,7 @@ dev = [
     { name = "asgi-lifespan", specifier = ">=2.1.0" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "ruff", specifier = ">=0.15.20" },
-    { name = "snektest", editable = "../snektest" },
+    { name = "snektest", specifier = ">=0.16.0" },
     { name = "types-croniter", specifier = ">=6.2.2.20260518" },
 ]
 
@@ -531,11 +531,15 @@ wheels = [
 [[package]]
 name = "snekql"
 version = "0.4.0"
-source = { editable = "../snekql" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-types" },
     { name = "anyio" },
     { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6e/01/8fa2e84c830479d986ce10d5bcd4537f9a6482fed368f90ba5d25f84cc75/snekql-0.4.0.tar.gz", hash = "sha256:2776409e0a5ee6d3585fb74c34968126d5d6333e1733b9d2550ea3bf21c3b519", size = 731521, upload-time = "2026-06-28T17:15:01.3Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/e7/89d15cdb61c429bf8531269cd68ae106f19636b3538764047ae4f17fd7b5/snekql-0.4.0-py3-none-any.whl", hash = "sha256:8591cd3a07846ada95741d87d5156f4ffc3150437f7287c368699e795cbfdc8c", size = 141570, upload-time = "2026-06-28T17:14:59.189Z" },
 ]
 
 [package.optional-dependencies]
@@ -543,50 +547,18 @@ aiosqlite = [
     { name = "aiosqlite" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "aiomysql", marker = "extra == 'aiomysql'", specifier = ">=0.3.2" },
-    { name = "aiosqlite", marker = "extra == 'aiosqlite'", specifier = ">=0.22.1" },
-    { name = "annotated-types", specifier = ">=0.7.0" },
-    { name = "anyio", specifier = ">=4.12.0" },
-    { name = "pydantic", specifier = ">=2.13.4" },
-]
-provides-extras = ["aiomysql", "aiosqlite"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "aiomysql", specifier = ">=0.3.2" },
-    { name = "aiosqlite", specifier = ">=0.22.1" },
-    { name = "pyrefly", specifier = ">=1.0.0" },
-    { name = "pyright", specifier = ">=1.1.409" },
-    { name = "ruff", specifier = ">=0.15.15" },
-    { name = "snektest", specifier = ">=0.12.0" },
-    { name = "ty", specifier = ">=0.0.44" },
-]
-
 [[package]]
 name = "snektest"
 version = "0.16.0"
-source = { editable = "../snektest" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hypothesis" },
     { name = "pydantic" },
     { name = "rich" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "hypothesis", specifier = ">=6.0.0" },
-    { name = "pydantic", specifier = ">=2.12.4" },
-    { name = "rich", specifier = ">=14.2.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "coverage", specifier = ">=7.13.1" },
-    { name = "pyright", specifier = ">=1.1.407" },
-    { name = "ruff", specifier = ">=0.14.5" },
-    { name = "ty", specifier = ">=0.0.9" },
+sdist = { url = "https://files.pythonhosted.org/packages/41/c1/da3edd9ab955d19821486a35d168e177c31fc71079d3225bb5b8ca768e3b/snektest-0.16.0.tar.gz", hash = "sha256:b3723cd42b6bb7fded4fb7be3cd7aeb23b68788e1ee69460ba01a75074c23a51", size = 69695, upload-time = "2026-06-27T20:16:14.018Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/11/53/44d102d3c9abeb06bf1e0041d7f02b089ee2834dd048f17cbc158e1943a8/snektest-0.16.0-py3-none-any.whl", hash = "sha256:ad9469d28dc7589746dedf302e35e6aa3bf37437ec83d5048457877722888ab1", size = 41401, upload-time = "2026-06-27T20:16:12.776Z" },
 ]
 
 [[package]]

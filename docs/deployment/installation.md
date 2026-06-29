@@ -77,10 +77,23 @@ In production, the Podman API service should be managed by systemd for the `danu
 
 #### Step 4: Generate Keys
 
+The encryption key and data-directory tree are created for you by `danube init`
+(see Step 6), so you normally only need to generate the SSH keys here. To create
+the encryption key manually instead:
+
 ```bash
 sudo -u danube openssl rand -out /var/lib/danube/keys/encryption.key 32
 sudo chmod 600 /var/lib/danube/keys/encryption.key
+```
 
+> **Warning:** Never regenerate the encryption key once secrets are stored — a new
+> key cannot decrypt existing secrets. `danube init` refuses to overwrite an
+> existing key unless `--force` is passed.
+
+The SSH keys (Blueprint deploy key, provenance signing key) are not managed by
+`danube init`:
+
+```bash
 sudo -u danube ssh-keygen -t ed25519 -f /var/lib/danube/keys/signing.key -N '' -C "danube-provenance"
 sudo chmod 600 /var/lib/danube/keys/signing.key
 
@@ -101,12 +114,23 @@ From source:
 git clone https://github.com/yourorg/danube.git
 cd danube
 uv sync
-uv run danube --version
+uv run danube --help
 ```
 
-#### Step 6: Configure Blueprint Repository
+#### Step 6: Bootstrap and Configure
 
-Create `/etc/danube/danube.toml`:
+Run `danube init` to create the data-directory tree, generate the encryption key
+(0600), and write a starter `/etc/danube/danube.toml`:
+
+```bash
+sudo -u danube danube init --data-dir /var/lib/danube --config /etc/danube/danube.toml
+```
+
+`danube init` is idempotent and never overwrites an existing key or config without
+`--force`. Then edit `/etc/danube/danube.toml` for your environment. A full
+annotated example ships in the repository at `deploy/danube.toml.example`; the
+field reference is in [server-config.md](../configuration/server-config.md). To
+sync pipelines from a Blueprint repository, fill in the `[config_repo]` block:
 
 ```toml
 [config_repo]
@@ -114,47 +138,21 @@ url = "git@github.com:yourorg/danube-blueprint.git"
 branch = "main"
 sync_interval = "60s"
 ssh_key_path = "/var/lib/danube/keys/git_deploy_key"
-
-[server]
-bind_address = "0.0.0.0:8080"
-rpc_address = "127.0.0.1:9000"
-data_dir = "/var/lib/danube"
-
-[runner]
-type = "local"
-runtime = "podman"
 ```
 
 Add `/var/lib/danube/keys/git_deploy_key.pub` to your Blueprint repository deploy keys.
 
-#### Step 7: Create Systemd Service
+#### Step 7: Install the Systemd Service
 
-Create `/etc/systemd/system/danube.service`:
+A ready-to-use unit ships at `deploy/danube.service`. Install it:
 
-```ini
-[Unit]
-Description=Danube CI/CD Appliance
-After=network.target
-
-[Service]
-Type=simple
-User=danube
-Group=danube
-WorkingDirectory=/var/lib/danube
-Environment="PATH=/home/danube/.local/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/home/danube/.local/bin/danube master --config /etc/danube/danube.toml
-Restart=on-failure
-RestartSec=10s
-
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/danube
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp deploy/danube.service /etc/systemd/system/danube.service
 ```
+
+It runs `danube master --config /etc/danube/danube.toml` as the `danube` user with
+filesystem hardening (`ProtectSystem=strict`, writable only under
+`/var/lib/danube`). Adjust the `ExecStart` path if `danube` is installed elsewhere.
 
 #### Step 8: Start Danube
 
