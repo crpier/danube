@@ -502,6 +502,36 @@ async def test_build_image_records_build_step_and_returns_digest() -> None:
     request = build_call.args[1]
     assert isinstance(request, BuildImageRequest)
     assert str(h.data_dir / "workspaces" / JOB_ID) in request.context_path
+    # Egress denied by default (ADR-0001); no build args or target unless asked.
+    assert_eq(request.build_args, {})
+    assert_eq(request.network, False)
+    assert_eq(request.target, None)
+
+
+@test(mark="medium")
+async def test_build_image_options_flow_to_runner() -> None:
+    h = await load_fixture(harness())
+    _seed_build_context(h.data_dir / "workspaces" / JOB_ID)
+    h.runner.script_build(
+        "app:abc",
+        BuildImageResult(
+            success=True, image_id="sha256:deadbeef", output="", tag="app:abc"
+        ),
+    )
+
+    _ = await h.danube().images.build(
+        "app:abc",
+        build_args={"VERSION": "1.2.3"},
+        network=True,
+        target="runtime",
+    )
+
+    build_call = next(c for c in h.runner.calls if c.method == "build_image")
+    request = build_call.args[1]
+    assert isinstance(request, BuildImageRequest)
+    assert_eq(request.build_args, {"VERSION": "1.2.3"})
+    assert_eq(request.network, True)
+    assert_eq(request.target, "runtime")
 
 
 @test(mark="medium")

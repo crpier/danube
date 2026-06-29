@@ -247,13 +247,16 @@ class LocalContainerRunner:
 
         The build runs on the same rootless Podman as the job pods, not inside the
         Worker, and tags into the shared Local Image Store. `RUN` networking is
-        disabled by the adapter's `BuildSpec` default (`docs/adr/0001-host-side-image-build.md`)."""
+        denied unless `request.network` opts in (`docs/adr/0001-host-side-image-build.md`)."""
         logger.info("building image %s for job %s", request.tag, job.job_id)
         result = await self._podman.build_image(
             BuildSpec(
                 context_path=request.context_path,
                 tag=request.tag,
                 dockerfile=request.dockerfile,
+                build_args=request.build_args,
+                network=request.network,
+                target=request.target,
             )
         )
         return BuildImageResult(

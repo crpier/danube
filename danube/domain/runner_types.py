@@ -57,12 +57,18 @@ class BuildImageRequest(_Frozen):
 
     `context_path` is the host-absolute build-context directory (the Master has
     already resolved it inside the job workspace); `dockerfile` is the
-    Containerfile path relative to that context. Builds run with networking
-    disabled for `RUN` instructions (`docs/adr/0001-host-side-image-build.md`)."""
+    Containerfile path relative to that context. `build_args` are passed to the
+    Dockerfile's `ARG` instructions (not secret-safe). `network` opts `RUN`
+    instructions into networking, which is denied by default
+    (`docs/adr/0001-host-side-image-build.md`). `target` selects a stage to build
+    in a multi-stage Containerfile."""
 
     tag: NonEmptyStr
     context_path: NonEmptyStr
     dockerfile: NonEmptyStr = "Dockerfile"
+    build_args: dict[str, str] = Field(default_factory=dict)
+    network: bool = False
+    target: str | None = None
 
 
 class BuildImageResult(_Frozen):
