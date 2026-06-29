@@ -35,10 +35,14 @@ class JobContext:
     `trigger_ref` is the raw ``branch/sha`` reference recorded on the job, or
     `None` for a run with no Git ref (e.g. a manual trigger). `branch` and `sha`
     decompose it: the sha is the final ``/``-separated segment, so a branch name
-    containing slashes (``feature/foo``) is preserved. With no ref, both are
-    `None`.
+    containing slashes (``feature/foo``) is preserved. A ref with no ``/`` is
+    not a valid ``branch/sha`` pair, so both `branch` and `sha` are `None`; with
+    no ref at all, both are likewise `None`.
     """
 
+    # Identity first, then the trigger_* pair grouped together (over strict
+    # alphabetical ordering) since `trigger_ref` is what `branch`/`sha` derive
+    # from and reads naturally beside `trigger_type`.
     job_id: str
     pipeline: str
     trigger_type: str

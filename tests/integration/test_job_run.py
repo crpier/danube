@@ -250,7 +250,7 @@ async def test_pipeline_reads_webhook_job_context() -> None:
     assert_eq(job.status, JobStatus.SUCCESS)
     # `pipeline` is the pipeline name; the ref decomposes into branch/sha.
     assert_eq(captured["pipeline"], "demo")
-    assert_eq(captured["trigger_type"], TriggerType.WEBHOOK)
+    assert_eq(captured["trigger_type"], TriggerType.WEBHOOK.value)
     assert_eq(captured["trigger_ref"], "main/abc123")
     assert_eq(captured["branch"], "main")
     assert_eq(captured["sha"], "abc123")
@@ -267,7 +267,7 @@ async def test_pipeline_reads_manual_job_context_without_ref() -> None:
 
     assert_eq(job.status, JobStatus.SUCCESS)
     assert_eq(captured["pipeline"], "demo")
-    assert_eq(captured["trigger_type"], TriggerType.MANUAL)
+    assert_eq(captured["trigger_type"], TriggerType.MANUAL.value)
     # A manual job carries no Git ref, so branch/sha surface as None cleanly.
     assert_eq(captured["trigger_ref"], None)
     assert_eq(captured["branch"], None)
