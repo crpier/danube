@@ -19,7 +19,11 @@ async def pipeline(danube: DanubeClient) -> None:
     `step.run` raises on a non-zero exit by default, so the returned exit codes are
     intentionally discarded (assigned to ``_``).
     """
-    _ = await danube.step.run("echo building && make build", name="build")
+    # `danube.context` carries this run's metadata (job id, pipeline name, trigger
+    # type, and the branch/sha when triggered from Git); tag the build with the
+    # commit sha when present, falling back to `latest` for a ref-less manual run.
+    tag = danube.context.sha or "latest"
+    _ = await danube.step.run(f"echo building {tag} && make build", name="build")
 
     deploy_token = await danube.secrets.get("DEPLOY_TOKEN")
     _ = await danube.step.run(

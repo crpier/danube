@@ -33,7 +33,7 @@ from danube.domain.runner_types import ExecResult
 from danube.orchestrator import JobOrchestrator
 from danube.rpc import ControlPlane
 from danube.runner import FakeRunner
-from danube.sdk import DanubeClient
+from danube.sdk import DanubeClient, JobContext
 from danube.sdk.client import ENV_JOB_ID, ENV_RPC_TOKEN
 from danube.security import SecretCipher, SecretService, generate_key
 
@@ -64,6 +64,22 @@ async def crashing_pipeline(danube: DanubeClient) -> None:
 async def hanging_pipeline(danube: DanubeClient) -> None:
     _ = await danube.step.run("echo one", name="one")
     await anyio.sleep_forever()
+
+
+def context_capturing_pipeline(
+    captured: dict[str, str | None],
+) -> coordinator.Pipeline:
+    """Build a pipeline that records `danube.context` fields then reports success."""
+
+    async def pipeline(danube: DanubeClient) -> None:
+        captured["pipeline"] = danube.context.pipeline
+        captured["trigger_type"] = danube.context.trigger_type
+        captured["trigger_ref"] = danube.context.trigger_ref
+        captured["branch"] = danube.context.branch
+        captured["sha"] = danube.context.sha
+        _ = await danube.status.report("success")
+
+    return pipeline
 
 
 @dataclass
@@ -109,7 +125,12 @@ async def _make_harness(max_duration_seconds: int = 3600) -> AsyncGenerator[Harn
     async def program(env: Mapping[str, str]) -> int:
         assert harness.http is not None
         assert harness.pipeline is not None
-        client = DanubeClient(harness.http, env[ENV_JOB_ID], env[ENV_RPC_TOKEN])
+        client = DanubeClient(
+            harness.http,
+            env[ENV_JOB_ID],
+            env[ENV_RPC_TOKEN],
+            context=JobContext.from_mapping(env),
+        )
         return await coordinator.run(client, harness.pipeline)
 
     runner = FakeRunner(coordinator=program)
@@ -213,6 +234,44 @@ async def test_coordinator_crash_fails_job_and_cleans_up() -> None:
     steps = await _steps(h.db, created.id)
     assert_eq([s.name for s in steps], ["one"])
     assert "cleanup_job" in h.runner.method_names
+
+
+@test(mark="medium")
+async def test_pipeline_reads_webhook_job_context() -> None:
+    h = await load_fixture(harness())
+    captured: dict[str, str | None] = {}
+    h.pipeline = context_capturing_pipeline(captured)
+    created = await h.orchestrator.create_job(
+        "p1", TriggerType.WEBHOOK, trigger_ref="main/abc123"
+    )
+
+    job = await h.orchestrator.run_job(created.id)
+
+    assert_eq(job.status, JobStatus.SUCCESS)
+    # `pipeline` is the pipeline name; the ref decomposes into branch/sha.
+    assert_eq(captured["pipeline"], "demo")
+    assert_eq(captured["trigger_type"], TriggerType.WEBHOOK)
+    assert_eq(captured["trigger_ref"], "main/abc123")
+    assert_eq(captured["branch"], "main")
+    assert_eq(captured["sha"], "abc123")
+
+
+@test(mark="medium")
+async def test_pipeline_reads_manual_job_context_without_ref() -> None:
+    h = await load_fixture(harness())
+    captured: dict[str, str | None] = {}
+    h.pipeline = context_capturing_pipeline(captured)
+    created = await h.orchestrator.create_job("p1", TriggerType.MANUAL)
+
+    job = await h.orchestrator.run_job(created.id)
+
+    assert_eq(job.status, JobStatus.SUCCESS)
+    assert_eq(captured["pipeline"], "demo")
+    assert_eq(captured["trigger_type"], TriggerType.MANUAL)
+    # A manual job carries no Git ref, so branch/sha surface as None cleanly.
+    assert_eq(captured["trigger_ref"], None)
+    assert_eq(captured["branch"], None)
+    assert_eq(captured["sha"], None)
 
 
 @test(mark="medium")

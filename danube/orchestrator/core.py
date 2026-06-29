@@ -56,7 +56,14 @@ from danube.domain.lifecycle import ALLOWED_TRANSITIONS, TERMINAL_STATES, transi
 from danube.domain.runner_types import CoordinatorExit, JobHandle, StartJobRequest
 from danube.observability import Metrics, Tracer, job_log_fields
 from danube.runner.base import Runner
-from danube.sdk.client import ENV_JOB_ID, ENV_RPC_ADDRESS, ENV_RPC_TOKEN
+from danube.sdk.client import (
+    ENV_JOB_ID,
+    ENV_PIPELINE,
+    ENV_RPC_ADDRESS,
+    ENV_RPC_TOKEN,
+    ENV_TRIGGER_REF,
+    ENV_TRIGGER_TYPE,
+)
 
 if TYPE_CHECKING:
     # Imported for typing only: at runtime `danube.rpc.control_plane` imports
@@ -250,7 +257,13 @@ class JobOrchestrator:
             ENV_RPC_ADDRESS: self._rpc_address,
             ENV_JOB_ID: job_id,
             ENV_RPC_TOKEN: session.token,
+            ENV_PIPELINE: pipeline.name,
+            ENV_TRIGGER_TYPE: job.trigger_type,
         }
+        # Absent for jobs with no Git ref (e.g. a manual trigger); the SDK's
+        # `JobContext` exposes `branch`/`sha` as `None` when it is missing.
+        if job.trigger_ref is not None:
+            coordinator_env[ENV_TRIGGER_REF] = job.trigger_ref
         final = JobStatus.SUCCESS
         reason: str | None = None
         try:
