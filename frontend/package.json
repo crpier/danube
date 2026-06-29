@@ -1,0 +1,17 @@
+{
+  "name": "danube-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Danube Master frontend SPA: pipeline/job UI with live log streaming.",
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "dev": "bun build ./index.html --outdir dist --watch"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}

@@ -6,6 +6,7 @@ serves the FastAPI app with uvicorn at the configured bind address.
 
 import argparse
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +32,23 @@ logger = logging.getLogger("danube.master")
 DEFAULT_BIND_ADDRESS = "127.0.0.1:8000"
 DEFAULT_DATABASE_PATH = "danube.db"
 
+# Where the built frontend SPA is served from. Overridable so a packaged deploy
+# can point at wherever its build lands; the default is the repo's `frontend/dist`
+# (two levels up from this module: `danube/master.py` -> repo root).
+_SPA_DIR_ENV = "DANUBE_FRONTEND_DIST"
+_DEFAULT_SPA_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+
+def _resolve_spa_dir() -> Path | None:
+    """Pick the SPA directory from the environment, falling back to the repo build.
+
+    Returns `None` only when neither an override nor the default directory exists,
+    so the Master runs API-only without a frontend build present.
+    """
+    override = os.environ.get(_SPA_DIR_ENV)
+    candidate = Path(override) if override else _DEFAULT_SPA_DIR
+    return candidate if candidate.is_dir() else None
+
 
 @dataclass(frozen=True)
 class MasterConfig:
@@ -46,6 +64,7 @@ class MasterConfig:
     database_path: Path | str = DEFAULT_DATABASE_PATH
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     auth: AuthConfig | None = None
+    spa_dir: Path | None = None
 
 
 def load_config(config_path: Path | None) -> MasterConfig:
@@ -59,6 +78,7 @@ def load_config(config_path: Path | None) -> MasterConfig:
         config_path=config_path,
         observability=ObservabilityConfig.from_env(),
         auth=AuthConfig.from_env(),
+        spa_dir=_resolve_spa_dir(),
     )
 
 
@@ -97,6 +117,7 @@ async def build_app(config: MasterConfig) -> tuple[FastAPI, Database]:
             tracer=tracer,
             metrics_enabled=config.observability.metrics_enabled,
             auth=config.auth,
+            spa_dir=config.spa_dir,
         ),
         db,
     )

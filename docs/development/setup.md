@@ -6,7 +6,7 @@
 - UV package manager
 - Git
 - Podman for runner integration tests
-- Node.js only if working on the frontend
+- [Bun](https://bun.sh) 1.3+ only if working on the frontend
 
 ## Initial Setup
 
@@ -218,10 +218,44 @@ pipelines. See [Testing Guide](./testing.md).
 
 ## Frontend Development
 
+The frontend is a small TypeScript SPA built with [Bun](https://bun.sh) (no
+runtime framework dependency). It lives in `frontend/` and is served by the
+Master at `/`.
+
 ```bash
 cd frontend
-npm install
-npm run dev
+bun install              # install dev deps (TypeScript) from bun.lock
+bun run lint             # type-check only (tsc --noEmit); this is the CI "lint"
+bun run build            # bundle + minify into frontend/dist/
 ```
 
-Frontend dev server should proxy API requests to http://localhost:8080.
+`bun run build` (which runs `scripts/build.ts`) emits hashed JS/CSS assets and a
+rewritten `index.html` into `frontend/dist/`. That directory is git-ignored;
+each environment builds its own.
+
+### How the build is served
+
+The Master serves whatever build is on disk — it does not build the frontend
+itself. On startup `danube.master._resolve_spa_dir()` picks the SPA directory:
+
+- `DANUBE_FRONTEND_DIST` if set, else
+- the repo default `frontend/dist/`.
+
+If that directory contains an `index.html` it is mounted at `/` via
+`danube.api.spa.mount_spa`; otherwise the Master runs API-only and `/` returns
+404 (so API-only and pre-build dev runs work unchanged). The SPA catch-all is
+mounted *after* every API/RPC/webhook router, so JSON routes are never shadowed;
+unmatched non-API paths fall back to `index.html` for client-side routing, while
+unknown `/api/...` paths still return 404.
+
+For local UI work, build once and run the Master, which serves the assets and
+the API from the same origin (no dev proxy needed):
+
+```bash
+(cd frontend && bun run build)
+uv run python -m danube.master      # serves SPA at / and the API at /api/v1
+```
+
+Re-run `bun run build` after frontend changes (or use `bun run dev` to rebuild
+on change), then refresh the browser. Because the SPA and API share an origin,
+the bearer token from the OIDC login flow is sent on every API/SSE request.

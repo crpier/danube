@@ -23,6 +23,8 @@
 
 The control-plane routes (`run`, `cancel`, `logs/stream`) are mounted only when the app is constructed with a `JobManager`; the read-only app omits them. The webhook routes are mounted only when the app additionally receives a `WebhookConfig` carrying the per-provider secrets (GitHub HMAC secret, GitLab token); a provider whose secret is unset rejects every request.
 
+The Frontend SPA is served from `/` by `danube.api.spa.mount_spa`, mounted *after* every API/RPC/webhook router so JSON routes are never shadowed. Given a built `frontend/dist/` (resolved from `DANUBE_FRONTEND_DIST` or the repo default), real files under it are served directly and any other non-reserved path falls back to `index.html` for client-side routing; unknown `/api/...` paths still return 404. When no build is present the mount is a no-op and `/` returns 404. See `docs/development/setup.md` (Frontend Development) for the build/serve flow.
+
 ### Internal RPC Control Plane
 
 **Responsibility**: Coordinator ↔ Master communication.
