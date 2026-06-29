@@ -33,3 +33,11 @@ explicitly opts in.
 - The Local Image Store is shared across concurrent jobs: identical tags collide
   (last-writer-wins). Tags stay raw/user-controlled; pipelines disambiguate using the
   Job Context (e.g. commit sha) rather than Danube auto-namespacing.
+- Pushing is the separate `danube.images.push(tag, registry, credentials=...)` verb. It
+  pushes a Local Image Store tag to `<registry>/<tag>` and records a `kind=push` step.
+  Registry credentials travel in the RPC body and on to host Podman as an
+  `X-Registry-Auth` header — never in the recorded step command or a logged URL — and
+  the password (a secret value) is scrubbed from the streamed push log like any other
+  secret. TLS verification is on by default; a pipeline opts out only for an insecure
+  (HTTP/self-signed) registry. A push the registry rejects (bad/absent auth) is a step
+  failure, not an implicit retry.

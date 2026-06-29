@@ -35,6 +35,7 @@ The Frontend SPA is served from `/` by `danube.api.spa.mount_spa`, mounted *afte
 
 - `POST /rpc/run-step` - Execute command in Worker container
 - `POST /rpc/build-image` - Build a container image on the host Podman from a workspace context (records a `kind=build` step; see `docs/adr/0001-host-side-image-build.md`)
+- `POST /rpc/push-image` - Push a tagged image from the host Local Image Store to an external Registry (records a `kind=push` step; auth credentials ride in the RPC body and never reach the recorded command; see `docs/adr/0001-host-side-image-build.md`)
 - `POST /rpc/get-secret` - Retrieve decrypted secret
 - `POST /rpc/upload-artifact` - Upload build artifact
 - `POST /rpc/report-status` - Update job or step status

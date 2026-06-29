@@ -23,6 +23,8 @@ from danube.domain.runner_types import (
     BuildImageRequest,
     ExecStepRequest,
     JobHandle,
+    PushImageRequest,
+    RegistryCredentials,
     StartJobRequest,
 )
 from danube.runner.base import Runner
@@ -51,6 +53,8 @@ from danube.runner.podman import (
     PodmanError,
     PodmanVersion,
     PodSpec,
+    PushResult,
+    PushSpec,
     ResourceSummary,
 )
 
@@ -75,6 +79,9 @@ class FakePodman:
         self.exec_result = ExecInspect(exit_code=0, running=False)
         self.build_result = BuildResult(
             success=True, image_id="sha256:built", output="step 1/1\n"
+        )
+        self.push_result = PushResult(
+            success=True, digest="sha256:pushed", output="pushing\n"
         )
         self.pods: list[ResourceSummary] = []
         self.containers: list[ResourceSummary] = []
@@ -156,6 +163,10 @@ class FakePodman:
     async def build_image(self, spec: BuildSpec) -> BuildResult:
         self._record("build_image", spec=spec)
         return self.build_result
+
+    async def push_image(self, spec: PushSpec) -> PushResult:
+        self._record("push_image", spec=spec)
+        return self.push_result
 
 
 # Assignable only if FakePodman structurally satisfies PodmanAPI, so the gate
@@ -507,6 +518,73 @@ async def test_build_image_reports_failure() -> None:
 
     assert result.success is False
     assert_eq(result.image_id, "")
+
+
+@test(mark="fast")
+async def test_push_image_drives_host_podman_push() -> None:
+    podman = FakePodman()
+    podman.push_result = PushResult(
+        success=True, digest="sha256:pushed", output="Writing manifest\n"
+    )
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()))
+
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+    result = await runner.push_image(
+        handle,
+        PushImageRequest(
+            tag="app:abc",
+            registry="registry.example.com",
+            credentials=RegistryCredentials(username="ci", password="pw"),
+        ),
+    )
+
+    assert result.success is True
+    # The push runs on host Podman (no pod/exec) to the composed destination.
+    assert_eq(podman.methods, ["push_image"])
+    assert_eq(result.reference, "registry.example.com/app:abc")
+    assert_eq(result.digest, "sha256:pushed")
+    spec = _by_method(podman.calls, "push_image").payload["spec"]
+    assert isinstance(spec, PushSpec)
+    assert_eq(spec.source, "app:abc")
+    assert_eq(spec.destination, "registry.example.com/app:abc")
+    assert_eq(spec.tls_verify, True)
+    assert spec.auth is not None
+    assert_eq(spec.auth.username, "ci")
+    assert_eq(spec.auth.password, "pw")
+
+
+@test(mark="fast")
+async def test_push_image_without_credentials_sends_no_auth() -> None:
+    podman = FakePodman()
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()))
+
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+    _ = await runner.push_image(
+        handle,
+        PushImageRequest(tag="app:abc", registry="localhost:5000", tls_verify=False),
+    )
+
+    spec = _by_method(podman.calls, "push_image").payload["spec"]
+    assert isinstance(spec, PushSpec)
+    assert spec.auth is None
+    assert_eq(spec.tls_verify, False)
+
+
+@test(mark="fast")
+async def test_push_image_reports_failure() -> None:
+    podman = FakePodman()
+    podman.push_result = PushResult(
+        success=False, digest="", output="unauthorized: authentication required\n"
+    )
+    runner = LocalContainerRunner(podman, load_fixture(data_dir()))
+
+    handle = JobHandle(job_id="j1", pod_id="pod-x", workspace_path="/ws")
+    result = await runner.push_image(
+        handle, PushImageRequest(tag="app:abc", registry="registry.example.com")
+    )
+
+    assert result.success is False
+    assert_eq(result.digest, "")
 
 
 @test(mark="fast")

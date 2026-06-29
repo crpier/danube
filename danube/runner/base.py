@@ -16,6 +16,8 @@ from danube.domain.runner_types import (
     ExecResult,
     ExecStepRequest,
     JobHandle,
+    PushImageRequest,
+    PushImageResult,
     ReconcileReport,
     RunnerHealth,
     StartJobRequest,
@@ -40,6 +42,14 @@ class Runner(Protocol):
     ) -> BuildImageResult:
         """Build a container image on the host Podman from a context in the job's
         workspace and tag it into the Local Image Store. Never runs in the Worker
+        (`docs/adr/0001-host-side-image-build.md`)."""
+        ...
+
+    async def push_image(
+        self, job: JobHandle, request: PushImageRequest
+    ) -> PushImageResult:
+        """Push a tagged image from the host Local Image Store to an external
+        Registry. Runs on the host Podman, never in the Worker
         (`docs/adr/0001-host-side-image-build.md`)."""
         ...
 

@@ -104,6 +104,16 @@ class BuildError(Exception):
         super().__init__(f"image build for {tag!r} failed")
 
 
+class PushError(Exception):
+    """An `images.push` failed (e.g. bad/absent registry auth, or the registry
+    rejected the push)."""
+
+    def __init__(self, tag: str, registry: str) -> None:
+        self.tag = tag
+        self.registry = registry
+        super().__init__(f"image push of {tag!r} to {registry!r} failed")
+
+
 @dataclass(frozen=True, slots=True)
 class StepResult:
     """Captured outcome of a step, returned by `step.capture`."""
@@ -130,6 +140,32 @@ class BuiltImage:
     id/digest in the host Local Image Store."""
 
     tag: str
+    digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryCredentials:
+    """Username/password for `images.push` to authenticate to a Registry.
+
+    The `password` is a secret value — fetch it via `secrets.get` rather than
+    inlining it, so it is scrubbed from the job log:
+
+        creds = RegistryCredentials("ci", await danube.secrets.get("REGISTRY_TOKEN"))
+    """
+
+    username: str
+    password: str
+
+
+@dataclass(frozen=True, slots=True)
+class PushedImage:
+    """An image pushed to an external Registry by `images.push`.
+
+    `reference` is the full pushed target reference (``<registry>/<tag>``);
+    `digest` is the pushed manifest digest when the Registry reported one (empty
+    otherwise)."""
+
+    reference: str
     digest: str
 
 
@@ -241,16 +277,19 @@ class StepApi:
 
 
 class ImagesApi:
-    """`images` namespace: build container images on the host from the workspace.
+    """`images` namespace: build and push container images on the host.
 
-    A build runs on the host's rootless Podman (the same daemon as the job pods),
-    never inside the Worker, and lands in the host Local Image Store
-    (`docs/adr/0001-host-side-image-build.md`). Tags are raw and user-controlled,
-    so a pipeline disambiguates concurrent builds itself, typically with the Job
-    Context commit sha:
+    Both verbs run on the host's rootless Podman (the same daemon as the job pods),
+    never inside the Worker (`docs/adr/0001-host-side-image-build.md`). `build`
+    lands a tagged image in the host Local Image Store; `push` uploads one of those
+    tags to an external Registry. Tags are raw and user-controlled, so a pipeline
+    disambiguates concurrent builds itself, typically with the Job Context commit
+    sha:
 
         tag = f"myapp:{danube.context.sha or 'latest'}"
-        image = await danube.images.build(tag)
+        await danube.images.build(tag)
+        creds = RegistryCredentials("ci", await danube.secrets.get("REGISTRY_TOKEN"))
+        await danube.images.push(tag, "registry.example.com", credentials=creds)
     """
 
     def __init__(self, client: RpcClient) -> None:
@@ -293,6 +332,39 @@ class ImagesApi:
         if not data.get("success"):
             raise BuildError(tag)
         return BuiltImage(tag=str(data["tag"]), digest=str(data["digest"]))
+
+    async def push(
+        self,
+        tag: str,
+        registry: str,
+        *,
+        credentials: RegistryCredentials | None = None,
+        name: str | None = None,
+        tls_verify: bool = True,
+    ) -> PushedImage:
+        """Push the Local Image Store ``tag`` to ``registry`` and return the
+        `PushedImage`. The image is pushed to ``<registry>/<tag>``.
+
+        ``credentials`` authenticate the push; a Registry that requires auth fails
+        the step when they are absent or wrong. ``tls_verify`` defaults on and is
+        only disabled for an insecure (HTTP/self-signed) Registry. A push the
+        Registry rejects raises `PushError`; the failed `push` step is still
+        recorded."""
+        payload: dict[str, Any] = {
+            "tag": tag,
+            "registry": registry,
+            "name": name,
+            "tls_verify": tls_verify,
+        }
+        if credentials is not None:
+            payload["credentials"] = {
+                "username": credentials.username,
+                "password": credentials.password,
+            }
+        data = await self._client.post("/rpc/push-image", payload)
+        if not data.get("success"):
+            raise PushError(tag, registry)
+        return PushedImage(reference=str(data["reference"]), digest=str(data["digest"]))
 
 
 class SecretsApi:

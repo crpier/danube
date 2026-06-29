@@ -41,11 +41,19 @@ from danube.domain.runner_types import (
     ExecStepRequest,
     JobHandle,
 )
+from danube.domain.runner_types import (
+    PushImageRequest as RunnerPushImageRequest,
+)
+from danube.domain.runner_types import (
+    RegistryCredentials as RunnerRegistryCredentials,
+)
 from danube.observability import Tracer
 from danube.orchestrator.log_writer import LogWriter
 from danube.rpc.schemas import (
     BuildImageRequest,
     BuildImageResponse,
+    PushImageRequest,
+    PushImageResponse,
     ReportStatusResponse,
     RunStepRequest,
     RunStepResponse,
@@ -304,6 +312,63 @@ class ControlPlane:
             await self._finish_step(step_id, exit_code, start, end)
         return BuildImageResponse(
             tag=result.tag, digest=result.image_id, success=result.success
+        )
+
+    async def push_image(
+        self, job_id: str, token: str, request: PushImageRequest
+    ) -> PushImageResponse:
+        """Push a tagged image from the Local Image Store to an external Registry.
+
+        Records a `kind=push` step, drives the push through the runner (host
+        Podman, never the Worker), streams the scrubbed push output to the job log,
+        and marks the step success/failure by the push outcome. Credentials ride in
+        the runner request only: they never reach the recorded step command, and
+        the secret password is scrubbed from the push log like any other secret."""
+        session = await self._authorize(job_id, token)
+        secret_values = self._secrets.active_values(session.job_id)
+        sequence = session.next_sequence()
+        step_id = str(uuid.uuid4())
+        name = request.name or f"push-{sequence}"
+        credentials = (
+            RunnerRegistryCredentials(
+                username=request.credentials.username,
+                password=request.credentials.password,
+            )
+            if request.credentials is not None
+            else None
+        )
+        # The recorded command carries no credentials; the registry/tag are not
+        # secret, so this is safe to persist as-is.
+        command = f"push {request.tag} to {request.registry}"
+        with self._tracer.span(f"push image {sequence}", job_id=job_id, step=name):
+            await self._begin_step(
+                Step(
+                    id=step_id,
+                    job_id=job_id,
+                    name=name,
+                    sequence=sequence,
+                    command=scrub_secrets(command, secret_values),
+                    kind=StepKind.PUSH,
+                    status=StepStatus.RUNNING,
+                    started_at=_now(),
+                )
+            )
+            with self._tracer.span("runner push", job_id=job_id, step=name):
+                result = await self._runner.push_image(
+                    session.handle,
+                    RunnerPushImageRequest(
+                        tag=request.tag,
+                        registry=request.registry,
+                        credentials=credentials,
+                        tls_verify=request.tls_verify,
+                    ),
+                )
+            scrubbed = scrub_secrets(result.output, secret_values)
+            start, end = await session.log.write(scrubbed)
+            exit_code = 0 if result.success else 1
+            await self._finish_step(step_id, exit_code, start, end)
+        return PushImageResponse(
+            reference=result.reference, digest=result.digest, success=result.success
         )
 
     async def get_secret(self, job_id: str, token: str, key: str) -> str:

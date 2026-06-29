@@ -6,6 +6,7 @@ translation (where the security defaults are encoded). The HTTP round-trips
 themselves are exercised by the socket-guarded integration tests.
 """
 
+import base64
 import io
 import json
 import tarfile
@@ -20,9 +21,13 @@ from danube.runner.podman.adapter import (
     BuildSpec,
     ContainerSpec,
     PodmanAdapter,
+    PushSpec,
+    RegistryAuth,
     _container_body,
+    _registry_auth_header,
     demultiplex_stream,
     parse_build_stream,
+    parse_push_stream,
     tar_build_context,
 )
 
@@ -247,6 +252,104 @@ async def test_build_image_sends_build_args_network_and_target() -> None:
     assert_eq(params.get("networkmode"), "default")
     assert_eq(json.loads(params["buildargs"]), {"VERSION": "1.2.3"})
     assert_eq(params.get("target"), "runtime")
+
+
+@test(mark="fast")
+def test_parse_push_stream_success_reads_explicit_digest() -> None:
+    content = _ndjson(
+        {"stream": "Getting image source signatures\n"},
+        {"stream": "Copying blob sha256:abc\n"},
+        {"stream": "Writing manifest to image destination\n"},
+        {"digest": "sha256:" + "a" * 64},
+    )
+
+    result = parse_push_stream(content)
+
+    assert result.success is True
+    assert_eq(result.digest, "sha256:" + "a" * 64)
+    assert "Writing manifest" in result.output
+
+
+@test(mark="fast")
+def test_parse_push_stream_reads_digest_from_progress_text() -> None:
+    # Some libpod versions only surface the digest inside a progress line.
+    digest = "sha256:" + "b" * 64
+    content = _ndjson({"stream": f"Writing manifest to image destination\n{digest}\n"})
+
+    result = parse_push_stream(content)
+
+    assert result.success is True
+    assert_eq(result.digest, digest)
+
+
+@test(mark="fast")
+def test_parse_push_stream_failure_records_error() -> None:
+    content = _ndjson(
+        {"stream": "Getting image source signatures\n"},
+        {"error": "unauthorized: authentication required"},
+    )
+
+    result = parse_push_stream(content)
+
+    assert result.success is False
+    assert_eq(result.digest, "")
+    assert "unauthorized" in result.output
+
+
+@test(mark="fast")
+def test_registry_auth_header_is_base64url_json() -> None:
+    header = _registry_auth_header(RegistryAuth(username="ci", password="pw"))
+    decoded = json.loads(base64.urlsafe_b64decode(header))
+
+    assert_eq(decoded, {"username": "ci", "password": "pw"})
+
+
+async def _push_with(spec: PushSpec) -> tuple[httpx.QueryParams, httpx.Headers, str]:
+    """Run `PodmanAdapter.push_image` against a mock transport and return the
+    libpod request's query params, headers, and path."""
+    seen: list[tuple[httpx.QueryParams, httpx.Headers, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.params, request.headers, request.url.path))
+        return httpx.Response(200, content=_ndjson({"digest": "sha256:" + "c" * 64}))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://podman"
+    ) as client:
+        adapter = PodmanAdapter(client)
+        result = await adapter.push_image(spec)
+    assert result.success is True
+    return seen[0]
+
+
+@test(mark="fast")
+async def test_push_image_sends_destination_and_auth_header() -> None:
+    params, headers, path = await _push_with(
+        PushSpec(
+            source="app:1",
+            destination="registry.example.com/app:1",
+            auth=RegistryAuth(username="ci", password="pw"),
+        )
+    )
+
+    # The source reference is in the path; the destination and tls posture in params.
+    assert path.endswith("/images/app:1/push")
+    assert_eq(params.get("destination"), "registry.example.com/app:1")
+    assert_eq(params.get("tlsVerify"), "true")
+    # Credentials ride in the header, never the query string.
+    assert "X-Registry-Auth" in headers
+    assert "pw" not in str(params)
+
+
+@test(mark="fast")
+async def test_push_image_without_auth_omits_header_and_can_disable_tls() -> None:
+    params, headers, _ = await _push_with(
+        PushSpec(source="app:1", destination="localhost:5000/app:1", tls_verify=False)
+    )
+
+    assert "X-Registry-Auth" not in headers
+    assert_eq(params.get("tlsVerify"), "false")
 
 
 @test(mark="fast")

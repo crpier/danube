@@ -25,6 +25,8 @@ from danube.rpc.schemas import (
     BuildImageResponse,
     GetSecretRequest,
     GetSecretResponse,
+    PushImageRequest,
+    PushImageResponse,
     ReportStatusRequest,
     ReportStatusResponse,
     RunStepRequest,
@@ -66,6 +68,16 @@ async def build_image(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
         ) from None
+
+
+@router.post("/push-image")
+async def push_image(
+    request: PushImageRequest, token: TokenDep, control_plane: ControlPlaneDep
+) -> PushImageResponse:
+    try:
+        return await control_plane.push_image(request.job_id, token, request)
+    except (SessionNotActiveError, InvalidTokenError) as error:
+        raise _reject_session(error) from None
 
 
 @router.post("/get-secret")
